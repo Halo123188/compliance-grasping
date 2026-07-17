@@ -14,6 +14,7 @@ Only three quantities are randomized per episode: object mass ``m``, friction
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING, cast
 
 import torch
@@ -59,6 +60,14 @@ def _uniform(lo: float, hi: float, n: int, device: torch.device | str) -> torch.
   return lo + (hi - lo) * torch.rand(n, device=device)
 
 
+def _loguniform(
+  lo: float, hi: float, n: int, device: torch.device | str
+) -> torch.Tensor:
+  """Sample n values log-uniformly in [lo, hi] (lo, hi > 0)."""
+  log_lo, log_hi = math.log(lo), math.log(hi)
+  return torch.exp(log_lo + (log_hi - log_lo) * torch.rand(n, device=device))
+
+
 # ─────────────────────────────── reset event ────────────────────────────────
 
 
@@ -98,7 +107,10 @@ def randomize_grasp(
 
   m = _uniform(*mass_range, n, env.device)
   mu = _uniform(*mu_range, n, env.device)
-  k = _uniform(*k_range, n, env.device)
+  # Log-uniform in k: uniform sampling wastes >90% of episodes on wide bands
+  # (k>3) where the crush constraint barely bites; the tight-band regime that
+  # forces careful force control is what we want the policy to see often.
+  k = _loguniform(*k_range, n, env.device)
 
   # Object mass + physically consistent inertia for a solid cube
   # (principal moment = m * (2*half)^2 / 6 on each axis).
@@ -144,6 +156,29 @@ def privileged_grasp_params(env: ManagerBasedRlEnv) -> torch.Tensor:
   return torch.stack([st.mass, st.mu, st.f_break], dim=-1)
 
 
+def force_budget_features(
+  env: ManagerBasedRlEnv,
+  force_sensor_names: tuple[str, ...],
+  normal_axis: int = 0,
+) -> torch.Tensor:
+  """Privileged critic obs: [Fn_min, slack = Fn - Fn_min, k] → (B, 3).
+
+  Precomputed so the critic gets the force budget directly instead of having to
+  learn ``m g / mu`` and the subtraction from the raw params. Uses the true
+  (un-noised) sensor force for the slack.
+  """
+  st = _state(env)
+  fn = total_normal_force(env, force_sensor_names, normal_axis)
+  slack = fn - st.fn_min
+  return torch.stack([st.fn_min, slack, st.k], dim=-1)
+
+
+def object_velocity(env: ManagerBasedRlEnv, object_name: str = "cube") -> torch.Tensor:
+  """Privileged critic obs: object linear + angular velocity (world) → (B, 6)."""
+  obj: Entity = env.scene[object_name]
+  return torch.cat([obj.data.root_link_lin_vel_w, obj.data.root_link_ang_vel_w], dim=-1)
+
+
 # ───────────────────────────────── helpers ──────────────────────────────────
 
 
@@ -179,6 +214,24 @@ def force_margin_penalty(
   band = (st.f_break * (1.0 - ramp)).clamp_min(1e-6)
   over = (fn - ramp * st.f_break).clamp_min(0.0) / band
   return over * over
+
+
+def force_over_min_penalty(
+  env: ManagerBasedRlEnv,
+  force_sensor_names: tuple[str, ...],
+  normal_axis: int = 0,
+) -> torch.Tensor:
+  """Linear penalty for grasp force above the minimum holding force ``Fn_min``.
+
+  Returns ``max(0, Fn / Fn_min - 1)``: zero at or below ``Fn_min`` (and when not
+  grasping, ``Fn = 0``), growing linearly with excess force. Anchored to the
+  efficient-grasp force rather than to ``F_break``, so it pushes the policy
+  toward gentle grasping instead of merely avoiding the crush limit. Reads the
+  true (un-noised) sensor force. Positive return; use a negative weight.
+  """
+  st = _state(env)
+  fn = total_normal_force(env, force_sensor_names, normal_axis)
+  return (fn / st.fn_min.clamp_min(1e-6) - 1.0).clamp_min(0.0)
 
 
 # ────────────────────────────── terminations ────────────────────────────────

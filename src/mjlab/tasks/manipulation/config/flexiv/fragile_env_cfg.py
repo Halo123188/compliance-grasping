@@ -26,6 +26,7 @@ from mjlab.tasks.manipulation.config.flexiv import fragile_mdp
 from mjlab.tasks.manipulation.config.flexiv.env_cfgs import get_cube_spec
 from mjlab.tasks.manipulation.lift_cube_env_cfg import make_lift_cube_env_cfg
 from mjlab.tasks.manipulation.mdp import LiftingCommandCfg
+from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 # FT sensors register under their entity-prefixed scene names.
 _ENTITY = "robot"
@@ -57,28 +58,46 @@ def flexiv_fragile_lift_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   joint_pos_action.scale = FLEXIV_ACTION_SCALE
 
   # ── Observations ────────────────────────────────────────────────────────────
-  # No observation corruption: keep exactly the three physical randomizations.
+  # The actor sees noisy sensors (corruption on); the critic sees ground truth
+  # (corruption off). Crucially, the crush event and the force penalties are
+  # adjudicated on the true contact force (they call the sensors directly, never
+  # the noised observation), so sensor noise can never trigger a phantom break.
   actor = cfg.observations["actor"]
   critic = cfg.observations["critic"]
-  actor.enable_corruption = False
+  actor.enable_corruption = True
   critic.enable_corruption = False
 
   actor.terms["ee_to_cube"].params["asset_cfg"].site_names = ("grasp_site",)
   critic.terms["ee_to_cube"].params["asset_cfg"].site_names = ("grasp_site",)
 
-  # Actor sees the raw 12-D FT wrench; must infer the force budget from it.
+  # Actor sees the noisy 12-D FT wrench; must infer the force budget from it.
+  # The same term object feeds the critic, but with corruption off there it is
+  # read clean (privileged true wrench).
   ft_term = ObservationTermCfg(
     func=fragile_mdp.ft_wrench,
     params={
       "force_sensor_names": FORCE_SENSORS,
       "torque_sensor_names": TORQUE_SENSORS,
     },
+    noise=Unoise(n_min=-0.25, n_max=0.25),  # N; starting FT sensor noise
   )
   actor.terms["ft_wrench"] = ft_term
   critic.terms["ft_wrench"] = ft_term
-  # Privileged critic-only obs: [mass, mu, F_break].
+  # Privileged critic-only obs: episode params [mass, mu, F_break], the
+  # precomputed force budget [Fn_min, slack, k] (so the critic need not learn
+  # m*g/mu), and the true object velocity.
   critic.terms["grasp_params"] = ObservationTermCfg(
     func=fragile_mdp.privileged_grasp_params
+  )
+  critic.terms["force_budget"] = ObservationTermCfg(
+    func=fragile_mdp.force_budget_features,
+    params={
+      "force_sensor_names": FORCE_SENSORS,
+      "normal_axis": FT_NORMAL_AXIS,
+    },
+  )
+  critic.terms["object_vel"] = ObservationTermCfg(
+    func=fragile_mdp.object_velocity, params={"object_name": "cube"}
   )
 
   # ── Commands: fixed spawn, target exactly _LIFT_HEIGHT above it ─────────────
@@ -126,6 +145,18 @@ def flexiv_fragile_lift_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "normal_axis": FT_NORMAL_AXIS,
     },
   )
+  # Independent efficiency penalty anchored at Fn_min (not F_break): pushes the
+  # grasp toward the minimum holding force instead of only avoiding the crush
+  # limit. Weight is the coefficient c in -c*max(0, Fn/Fn_min - 1); tune it up if
+  # the policy still over-grips, down if it under-grips and drops the object.
+  cfg.rewards["force_over_min"] = RewardTermCfg(
+    func=fragile_mdp.force_over_min_penalty,
+    weight=-0.2,
+    params={
+      "force_sensor_names": FORCE_SENSORS,
+      "normal_axis": FT_NORMAL_AXIS,
+    },
+  )
 
   # ── Terminations: crush = failure, held-for-2 s = success ──────────────────
   cfg.terminations["object_crushed"] = TerminationTermCfg(
@@ -157,5 +188,7 @@ def flexiv_fragile_lift_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     cfg.episode_length_s = int(1e9)
     assert cfg.commands is not None
     cfg.commands["lift_height"].resampling_time_range = (5.0, 5.0)
+    # Evaluate on clean sensors.
+    cfg.observations["actor"].enable_corruption = False
 
   return cfg
