@@ -2,6 +2,8 @@ from mjlab.tasks.manipulation.rl import ManipulationOnPolicyRunner
 from mjlab.tasks.registry import register_mjlab_task
 
 from .env_cfgs import flexiv_pick_place_env_cfg
+from .fragile_env_cfg import flexiv_fragile_lift_env_cfg
+from .fragile_rl_cfg import flexiv_fragile_lift_ppo_runner_cfg
 from .rl_cfg import flexiv_pick_place_ppo_runner_cfg
 
 register_mjlab_task(
@@ -9,5 +11,13 @@ register_mjlab_task(
   env_cfg=flexiv_pick_place_env_cfg(),
   play_env_cfg=flexiv_pick_place_env_cfg(play=True),
   rl_cfg=flexiv_pick_place_ppo_runner_cfg(),
+  runner_cls=ManipulationOnPolicyRunner,
+)
+
+register_mjlab_task(
+  task_id="Mjlab-Lift-Fragile-Flexiv",
+  env_cfg=flexiv_fragile_lift_env_cfg(),
+  play_env_cfg=flexiv_fragile_lift_env_cfg(play=True),
+  rl_cfg=flexiv_fragile_lift_ppo_runner_cfg(),
   runner_cls=ManipulationOnPolicyRunner,
 )

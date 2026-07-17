@@ -60,6 +60,22 @@ GRIPPER_STIFFNESS = 200.0  # N/m
 GRIPPER_DAMPING = 20.0  # N·s/m
 GRIPPER_EFFORT_LIMIT = 20.0  # N
 
+# ── Force/torque sensor mounting sites ──────────────────────────────────────
+# One 6-axis FT sensor per finger, mounted on the inner contact face of each
+# finger holder near the collider. The site's body is the finger holder, so a
+# MuJoCo force/torque sensor here reads the wrench transmitted between the finger
+# and the gripper base — i.e. the grasp contact wrench. The finger joint slides
+# along the holder-frame X axis, so the site's +X is the closing / contact-normal
+# direction. Placement is on each finger collider's inner face (X nudged toward
+# the jaw centre); the force reading itself is position-invariant.
+FT_SITE_NAMES: tuple[str, str] = ("left_ft_site", "right_ft_site")
+FT_NORMAL_AXIS: int = 0  # holder-frame X == finger closing / contact-normal axis
+FT_FORCE_SENSOR_NAMES: tuple[str, str] = ("ft_force_left", "ft_force_right")
+FT_TORQUE_SENSOR_NAMES: tuple[str, str] = ("ft_torque_left", "ft_torque_right")
+_FT_SITE_SIZE = 0.008  # visual radius (m)
+_LEFT_FT_POS = (-0.0435, 0.1244, -0.003)  # left_finger_holder frame, inner face
+_RIGHT_FT_POS = (0.0435, 0.1244, -0.003)  # right_finger_holder frame, inner face
+
 _FLOATING_JOINTS = (
   "gripper_joint_x",
   "gripper_joint_y",
@@ -159,6 +175,17 @@ def _build_gripper_spec() -> mujoco.MjSpec:
   grasp_site.pos = list(_GRASP_SITE_POS)
   grasp_site.size = [0.01, 0.0, 0.0]
   grasp_site.rgba = [1.0, 0.0, 0.0, 0.9]
+
+  # FT sensor sites, one on each finger holder's inner contact face.
+  for body in spec.worldbody.find_all(mujoco.mjtObj.mjOBJ_BODY):
+    if body.name == "left_finger_holder":
+      s = body.add_site()
+      s.name, s.pos, s.rgba = "left_ft_site", list(_LEFT_FT_POS), [0.0, 0.9, 0.9, 1.0]
+      s.type, s.size = mujoco.mjtGeom.mjGEOM_SPHERE, [_FT_SITE_SIZE, 0.0, 0.0]
+    elif body.name == "right_finger_holder":
+      s = body.add_site()
+      s.name, s.pos, s.rgba = "right_ft_site", list(_RIGHT_FT_POS), [0.9, 0.0, 0.9, 1.0]
+      s.type, s.size = mujoco.mjtGeom.mjGEOM_SPHERE, [_FT_SITE_SIZE, 0.0, 0.0]
 
   # Mirror the right jaw onto the left so a single command closes both.
   eq = spec.add_equality()
@@ -263,6 +290,37 @@ def get_flexiv_robot_cfg() -> EntityCfg:
     spec_fn=get_spec,
     articulation=ARTICULATION,
   )
+
+
+def get_ft_sensor_cfgs(entity: str = "robot") -> tuple:
+  """Two 6-axis FT sensors: a force+torque pair on each fingertip site.
+
+  Each pair reads the wrench transmitted between the finger and the gripper base
+  in the finger (site) frame — the grasp contact wrench. Returns four
+  ``BuiltinSensorCfg`` (force_left, force_right, torque_left, torque_right); each
+  ``force``/``torque`` sensor outputs a 3-vector, so the two FT sensors together
+  give 12 values.
+  """
+  from mjlab.sensor import BuiltinSensorCfg, ObjRef
+
+  cfgs = []
+  for sensor_name, site_name in zip(FT_FORCE_SENSOR_NAMES, FT_SITE_NAMES, strict=True):
+    cfgs.append(
+      BuiltinSensorCfg(
+        name=sensor_name,
+        sensor_type="force",
+        obj=ObjRef(type="site", name=site_name, entity=entity),
+      )
+    )
+  for sensor_name, site_name in zip(FT_TORQUE_SENSOR_NAMES, FT_SITE_NAMES, strict=True):
+    cfgs.append(
+      BuiltinSensorCfg(
+        name=sensor_name,
+        sensor_type="torque",
+        obj=ObjRef(type="site", name=site_name, entity=entity),
+      )
+    )
+  return tuple(cfgs)
 
 
 # Arm joints: 0.25 * effort_limit / stiffness (covers ~±25% of joint torque budget)

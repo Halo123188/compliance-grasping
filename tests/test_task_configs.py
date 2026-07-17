@@ -13,6 +13,13 @@ def all_task_ids() -> list[str]:
   return list_tasks()
 
 
+# Tasks that deliberately opt out of policy observation corruption. The fragile
+# lift experiment is restricted to exactly three physical randomizations (mass,
+# friction, and the F_break force budget) with no observation noise, so its
+# actor group runs with corruption disabled by design.
+_NO_OBS_CORRUPTION_TASKS = {"Mjlab-Lift-Fragile-Flexiv"}
+
+
 def test_all_tasks_loadable(all_task_ids: list[str]) -> None:
   """All registered tasks should be loadable without errors."""
   for task_id in all_task_ids:
@@ -68,6 +75,8 @@ def test_play_mode_observation_corruption_disabled(all_task_ids: list[str]) -> N
 def test_training_mode_observation_corruption_enabled(all_task_ids: list[str]) -> None:
   """Training mode tasks should have observation corruption enabled for policy."""
   for task_id in all_task_ids:
+    if task_id in _NO_OBS_CORRUPTION_TASKS:
+      continue
     cfg = load_env_cfg(task_id)
 
     assert "actor" in cfg.observations, (
