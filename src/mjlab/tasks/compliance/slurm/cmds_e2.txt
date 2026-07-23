@@ -1,0 +1,3 @@
+uv run train Mjlab-Compliance-Reach-Flexiv --env.scene.num-envs 1024 --agent.num-steps-per-env 32 --agent.max-iterations 2500 --agent.save-interval 200 --agent.logger tensorboard --video False --agent.seed 0 --agent.run-name e2_seed0
+uv run train Mjlab-Compliance-Reach-Flexiv --env.scene.num-envs 1024 --agent.num-steps-per-env 32 --agent.max-iterations 2500 --agent.save-interval 200 --agent.logger tensorboard --video False --agent.seed 1 --agent.run-name e2_seed1
+uv run train Mjlab-Compliance-Reach-Flexiv --env.scene.num-envs 1024 --agent.num-steps-per-env 32 --agent.max-iterations 2500 --agent.save-interval 200 --agent.logger tensorboard --video False --agent.seed 2 --agent.run-name e2_seed2
