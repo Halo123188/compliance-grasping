@@ -23,7 +23,11 @@ from pathlib import Path
 
 import mujoco
 
-from mjlab.actuator import BuiltinPositionActuatorCfg, XmlActuatorCfg
+from mjlab.actuator import (
+  BuiltinMotorActuatorCfg,
+  BuiltinPositionActuatorCfg,
+  XmlActuatorCfg,
+)
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.spec_config import CollisionCfg
 
@@ -289,6 +293,130 @@ def get_flexiv_robot_cfg() -> EntityCfg:
     collisions=(GRIPPER_ONLY_COLLISION,),
     spec_fn=get_spec,
     articulation=ARTICULATION,
+  )
+
+
+# ── Torque-controlled variant (for Cartesian impedance control) ──────────────
+# The stock arm ships with <position> actuators (joint-space PD). Cartesian
+# impedance control needs joint *torque* input, so this variant strips those and
+# drives each arm joint as a <motor>. Per-joint torque limits (Rizon4S datasheet
+# order): J1..J7 = 123/123/64/64/39/39/39 Nm.
+FLEXIV_ARM_EFFORT_LIMIT: tuple[float, ...] = (
+  123.0,
+  123.0,
+  64.0,
+  64.0,
+  39.0,
+  39.0,
+  39.0,
+)
+_ARM_JOINTS: tuple[str, ...] = (
+  "joint1",
+  "joint2",
+  "joint3",
+  "joint4",
+  "joint5",
+  "joint6",
+  "joint7",
+)
+
+
+def get_torque_spec() -> mujoco.MjSpec:
+  """Like :func:`get_spec` but with the arm's position actuators removed.
+
+  The arm joints are re-actuated as motors by ``ARM_MOTOR_ACTUATOR``; the gripper
+  keeps its builtin position actuator.
+  """
+  spec = get_spec()
+  for a in list(spec.actuators):
+    if a.name.lstrip("/") in _ARM_JOINTS:
+      spec.delete(a)
+  return spec
+
+
+ARM_MOTOR_ACTUATOR = BuiltinMotorActuatorCfg(
+  target_names_expr=_ARM_JOINTS,
+  # Generous headroom; the impedance controller clips to FLEXIV_ARM_EFFORT_LIMIT
+  # per joint before sending, so this never binds first.
+  effort_limit=200.0,
+)
+
+TORQUE_ARTICULATION = EntityArticulationInfoCfg(
+  actuators=(ARM_MOTOR_ACTUATOR, GRIPPER_ACTUATOR),
+  soft_joint_pos_limit_factor=0.9,
+)
+
+
+def get_flexiv_torque_robot_cfg() -> EntityCfg:
+  """Flexiv + UMI with torque (motor) arm actuators for impedance control."""
+  return EntityCfg(
+    init_state=HOME_KEYFRAME,
+    collisions=(GRIPPER_ONLY_COLLISION,),
+    spec_fn=get_torque_spec,
+    articulation=TORQUE_ARTICULATION,
+  )
+
+
+# ── Bare arm (no UMI gripper) ────────────────────────────────────────────────
+# The compliance reach task needs no gripper: the "human" is a virtual wrench,
+# not a grasped object, and the end-effector is just the flange tool point.  This
+# variant loads only the Flexiv arm and exposes a ``grasp_site`` on link7 so the
+# reach command / EE observation resolve exactly as they do with the gripper.
+# EE frame sits a short way down link7's local +z (its tool approach axis), where
+# a flange tool plate would be -- shorter reach than the ~0.22 m UMI stack.
+_BARE_EE_POS = (0.0, 0.0, 0.05)  # m, link7 local frame (tool approach axis)
+
+
+def get_bare_torque_spec() -> mujoco.MjSpec:
+  """Flexiv arm alone, torque-actuated, with a ``grasp_site`` EE on link7."""
+  spec = mujoco.MjSpec.from_file(str(FLEXIV_XML))
+
+  link7 = next(
+    (b for b in spec.worldbody.find_all(mujoco.mjtObj.mjOBJ_BODY) if b.name == "link7"),
+    None,
+  )
+  assert link7 is not None, "link7 not found in Flexiv spec"
+  ee = link7.add_site()
+  ee.name = "grasp_site"
+  ee.pos = list(_BARE_EE_POS)
+  ee.size = [0.01, 0.0, 0.0]
+  ee.rgba = [1.0, 0.0, 0.0, 0.9]
+
+  # Strip the stock position actuators so the arm joints take motor torque.
+  for a in list(spec.actuators):
+    if a.name.lstrip("/") in _ARM_JOINTS:
+      spec.delete(a)
+  return spec
+
+
+# Home pose without the finger joints (they do not exist on the bare arm).
+BARE_HOME_KEYFRAME = EntityCfg.InitialStateCfg(
+  pos=(0.0, 0.0, 0.0),
+  joint_pos={
+    "joint1": 0.0,
+    "joint2": 0.0,
+    "joint3": 0.0,
+    "joint4": 1.57,
+    "joint5": 0.0,
+    "joint6": 0.0,
+    "joint7": 0.0,
+  },
+  joint_vel={".*": 0.0},
+)
+
+BARE_TORQUE_ARTICULATION = EntityArticulationInfoCfg(
+  actuators=(ARM_MOTOR_ACTUATOR,),
+  soft_joint_pos_limit_factor=0.9,
+)
+
+
+def get_flexiv_bare_torque_robot_cfg() -> EntityCfg:
+  """Flexiv Rizon 4S alone (no gripper), torque-actuated for impedance control."""
+  return EntityCfg(
+    init_state=BARE_HOME_KEYFRAME,
+    collisions=(),  # free-space reach; the human wrench is virtual, no contacts
+    spec_fn=get_bare_torque_spec,
+    articulation=BARE_TORQUE_ARTICULATION,
   )
 
 

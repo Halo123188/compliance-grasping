@@ -66,3 +66,13 @@ register_mjlab_task(
   rl_cfg=flexiv_reach_ppo_runner_cfg(),
   runner_cls=ManipulationOnPolicyRunner,
 )
+
+# Bare Rizon 4S (no UMI gripper) on the e15 "full" setup: same disturbance
+# shapes, grip moment and corrected randomisation, arm only.
+register_mjlab_task(
+  task_id="Mjlab-Compliance-Reach-Flexiv-Bare-Full",
+  env_cfg=flexiv_reach_env_cfg(ablation="full", bare=True),
+  play_env_cfg=flexiv_reach_env_cfg(play=True, ablation="full", bare=True),
+  rl_cfg=flexiv_reach_ppo_runner_cfg(),
+  runner_cls=ManipulationOnPolicyRunner,
+)
