@@ -151,6 +151,21 @@ def privileged_teacher(
   )
 
 
+def pull_direction(
+  env: ManagerBasedRlEnv, command_name: str = "teacher"
+) -> torch.Tensor:
+  """Privileged unit pull direction ``u`` (N, 3), zero when idle.
+
+  DIAGNOSTIC ONLY.  The actor is normally proprioception-only and must infer the
+  push from joint torques; this hands it the ground-truth direction so we can
+  ask whether *observability* is what blocks directional compliance.  If K∥/K⊥
+  drops below 1 with this in the actor obs, the deployable fix is a
+  proprioception-derived force estimate; if not, the diagonal-K action space is
+  the wall.  Not deployable as-is (needs the privileged perturbation state).
+  """
+  return _teacher(env, command_name).perturbation.direction
+
+
 def privileged_perturbation(
   env: ManagerBasedRlEnv, command_name: str = "teacher"
 ) -> torch.Tensor:

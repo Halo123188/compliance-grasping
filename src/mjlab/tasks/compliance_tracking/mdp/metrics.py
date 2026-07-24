@@ -142,6 +142,24 @@ def commanded_k_perp(
   return k_perp * active.float()
 
 
+def effective_k_pull(
+  env: ManagerBasedRlEnv, command_name: str = "teacher", min_dev: float = 0.01
+) -> torch.Tensor:
+  """Effective stiffness along the pull ``‖F_ext‖ / yield_along_u`` (N/m).
+
+  Read from the *physical response*, not a commanded value, so it is the one
+  compliance number that is well-defined for the direct-torque policy (which has
+  no commanded ``K``).  Low means the arm gives easily under the push — the
+  intended behaviour.  Masked to pulled steps; read it as a masked mean.
+  """
+  t = _teacher(env, command_name)
+  u = t.perturbation.direction
+  yield_par = ((t.ee_pos_w() - t.x_ref()) * u).sum(dim=-1).abs()
+  f = torch.norm(t.perturbation.force, dim=-1)
+  k = f / yield_par.clamp(min=min_dev)
+  return k * t.perturbation.active.float()
+
+
 def k_anisotropy_ratio(
   env: ManagerBasedRlEnv, command_name: str = "teacher", action_name: str = "impedance"
 ) -> torch.Tensor:

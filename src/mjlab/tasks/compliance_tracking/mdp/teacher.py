@@ -45,7 +45,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import mujoco
+import mujoco_warp as mjwarp
 import torch
+import warp as wp
 
 from mjlab.entity import Entity
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
@@ -58,7 +60,11 @@ from mjlab.tasks.compliance_tracking.mdp.perturbation import (
   HumanPerturbation,
   PerturbationCfg,
 )
-from mjlab.utils.lab_api.math import sample_uniform
+from mjlab.utils.lab_api.math import (
+  compute_pose_error,
+  quat_from_matrix,
+  sample_uniform,
+)
 
 if TYPE_CHECKING:
   from mjlab.envs.manager_based_rl_env import ManagerBasedRlEnv
@@ -136,6 +142,27 @@ class TeacherCommandCfg(CommandTermCfg):
   """``K`` (N/m) targeted *along the pull direction* while a hand is pushing
   (perpendicular axes stay at ``k_precision``).  Below the admittance ``k`` (300)
   so yielding along the push is genuinely low-effort."""
+
+  # --- Compliant torque target (exp-2: direct-torque action) ------------------
+  emit_torque_target: bool = False
+  """Compute a compliant joint-torque target ``tau_target`` for the torque-action
+  variant.  It is an anisotropic Cartesian impedance about the *un-yielded*
+  reference ``x_ref``: a full rank-1 stiffness ``K(u) = k_precision·I −
+  (k_precision − k_soft)·uuᵀ`` (soft along the pull, stiff perpendicular — the
+  rotated matrix a diagonal action stiffness cannot represent), plus orientation
+  lock, null-space damping and gravity comp, mapped to joint torque via ``Jᵀ``.
+  The direct-torque policy is rewarded for reproducing it (``mdp.torque_tracking``)
+  from proprioception.  Because ``K`` is applied about ``x_ref`` with ``k_soft``
+  along ``u``, the arm yields ``F_ext/k_soft`` along the push by construction."""
+
+  arm_joint_names: tuple[str, ...] = ()
+  """Arm joints ``tau_target`` drives (required when ``emit_torque_target``)."""
+
+  torque_rot_stiffness: float = 50.0
+  """Orientation-lock rotational stiffness in ``tau_target`` (Nm/rad)."""
+
+  torque_nullspace_damping: float = 2.0
+  """Null-space joint damping in ``tau_target`` (Nm·s/rad)."""
 
   # --- §1.5 scripted grasp ----------------------------------------------------
   grasp_force: float = 15.0
@@ -232,6 +259,13 @@ class TeacherCommand(CommandTerm):
       if cfg.weld_enabled:
         self._setup_weld(env)
 
+    # Compliant torque target (exp-2). Orientation lock is seeded like x_t.
+    self.torque_target: torch.Tensor | None = None
+    self._lock_quat = torch.zeros(n, 4, device=dev)
+    self._lock_quat[:, 0] = 1.0
+    if cfg.emit_torque_target:
+      self._setup_torque_target(env)
+
     self.metrics["path_parameter"] = z(n)
     self.metrics["tracking_error"] = z(n)
     self.metrics["perturbation_force"] = z(n)
@@ -255,6 +289,97 @@ class TeacherCommand(CommandTerm):
     self._gripper_body = int(model.body(f"{self.cfg.robot_name}/gripper_base").id)
     assert self._object is not None
     self._object_body = int(self._object.indexing.root_body_id)
+
+  # -- exp-2 compliant torque target -------------------------------------------
+
+  def _setup_torque_target(self, env: ManagerBasedRlEnv) -> None:
+    """Warp Jacobian buffers + arm DOF ids (mirrors CartesianImpedanceAction)."""
+    cfg = self.cfg
+    assert cfg.arm_joint_names, "emit_torque_target requires arm_joint_names"
+    jids, _ = self.robot.find_joints(list(cfg.arm_joint_names), preserve_order=True)
+    self._arm_joint_ids = torch.tensor(jids, device=self.device, dtype=torch.long)
+    self._arm_dof_ids = self.robot.indexing.joint_v_adr[self._arm_joint_ids]
+    self._body_id = int(env.sim.mj_model.site_bodyid[self._site_id])
+    nworld, nv = self.num_envs, env.sim.mj_model.nv
+    with wp.ScopedDevice(env.sim.wp_device):
+      self._jacp_wp = wp.zeros((nworld, 3, nv), dtype=float)
+      self._jacr_wp = wp.zeros((nworld, 3, nv), dtype=float)
+      self._point_wp = wp.zeros(nworld, dtype=wp.vec3)
+      self._body_wp = wp.zeros(nworld, dtype=wp.int32)
+      self._body_wp.fill_(self._body_id)
+    self._jacp_torch = wp.to_torch(self._jacp_wp)
+    self._jacr_torch = wp.to_torch(self._jacr_wp)
+    self._point_torch = wp.to_torch(self._point_wp).view(nworld, 3)
+    self.torque_target = torch.zeros(self.num_envs, len(jids), device=self.device)
+    m = cfg.admittance_mass
+    dr = cfg.admittance_damping_ratio
+    self._td_soft = 2.0 * dr * math.sqrt(cfg.k_soft * m)
+    self._td_stiff = 2.0 * dr * math.sqrt(cfg.k_precision * m)
+    self._trot_d = 2.0 * dr * math.sqrt(cfg.torque_rot_stiffness * m)
+
+  def _compute_torque_target(self) -> None:
+    """``tau_target`` = anisotropic Cartesian impedance about ``x_ref``, via Jᵀ.
+
+    Full rank-1 stiffness ``K(u) = k_precision·I − (k_precision − k_soft)·uuᵀ``:
+    soft along the pull ``u``, stiff perpendicular — the rotated matrix a diagonal
+    action stiffness cannot represent.  Applied about the *un-yielded* reference
+    ``x_ref`` so the arm yields ``F_ext/k_soft`` along the push by construction.
+    """
+    data = self._env.sim.data
+    x_ee = self.ee_pos_w()
+    q_ee = quat_from_matrix(data.site_xmat[:, self._site_id])
+    self._point_torch[:] = x_ee
+    with wp.ScopedDevice(self._env.sim.wp_device):
+      mjwarp.jac(
+        self._env.sim.wp_model,
+        self._env.sim.wp_data,
+        self._jacp_wp,
+        self._jacr_wp,
+        self._point_wp,
+        self._body_wp,
+      )
+    jacp, jacr = self._jacp_torch, self._jacr_torch
+    qvel = data.qvel
+    v_ee = torch.einsum("bij,bj->bi", jacp, qvel)
+    w_ee = torch.einsum("bij,bj->bi", jacr, qvel)
+
+    u = self.perturbation.direction  # (N, 3), unit while pushed, 0 idle
+    uut = u.unsqueeze(-1) * u.unsqueeze(-2)  # (N, 3, 3)
+    eye = torch.eye(3, device=self.device).expand(self.num_envs, 3, 3)
+    kp, ks = self.cfg.k_precision, self.cfg.k_soft
+    k_full = kp * eye - (kp - ks) * uut
+    d_full = self._td_stiff * eye - (self._td_stiff - self._td_soft) * uut
+
+    x_ref = self.path.position(self.s)
+    f_pos = torch.einsum("bij,bj->bi", k_full, x_ref - x_ee) - torch.einsum(
+      "bij,bj->bi", d_full, v_ee
+    )
+    _, rot_err = compute_pose_error(x_ee, q_ee, x_ee, self._lock_quat)
+    f_rot = self.cfg.torque_rot_stiffness * rot_err - self._trot_d * w_ee
+
+    jacp_arm = jacp[:, :, self._arm_dof_ids]
+    jacr_arm = jacr[:, :, self._arm_dof_ids]
+    tau = torch.einsum("bij,bi->bj", jacp_arm, f_pos) + torch.einsum(
+      "bij,bi->bj", jacr_arm, f_rot
+    )
+    tau = tau + data.qfrc_bias[:, self._arm_dof_ids]
+    qd_arm = qvel[:, self._arm_dof_ids]
+    tau = tau + self._nullspace_torque(
+      jacp_arm, jacr_arm, -self.cfg.torque_nullspace_damping * qd_arm
+    )
+    self.torque_target = torch.nan_to_num(tau, nan=0.0, posinf=0.0, neginf=0.0)
+
+  def _nullspace_torque(
+    self, jacp_arm: torch.Tensor, jacr_arm: torch.Tensor, tau_secondary: torch.Tensor
+  ) -> torch.Tensor:
+    """Project a secondary joint torque into the task null-space (I − J⁺J)."""
+    j = torch.cat([jacp_arm, jacr_arm], dim=1)  # (N, 6, nj)
+    jjt = torch.einsum("bik,bjk->bij", j, j)
+    eye6 = torch.eye(6, device=self.device).expand_as(jjt)
+    jjt_inv = torch.linalg.inv(jjt + 1e-4 * eye6)
+    j_tau = torch.einsum("bik,bk->bi", j, tau_secondary)
+    proj = torch.einsum("bik,bi->bk", j, torch.einsum("bij,bj->bi", jjt_inv, j_tau))
+    return tau_secondary - proj
 
   # -- public accessors (privileged: critic, reward, metrics only) --------------
 
@@ -336,6 +461,10 @@ class TeacherCommand(CommandTerm):
     self.path.set_waypoints(ids, x_ee, grasp, self.cfg.standoff, self.cfg.lift_height)
     self.x_t[ids] = x_ee
     self.xd_t[ids] = 0.0
+    if self.cfg.emit_torque_target:
+      # Lock the orientation target to the post-reset EE pose (like x_t).
+      q_ee = quat_from_matrix(self._env.sim.data.site_xmat[:, self._site_id])
+      self._lock_quat[ids] = q_ee[ids]
     self._needs_seed[ids] = False
 
   def compute(self, dt: float) -> None:
@@ -395,6 +524,10 @@ class TeacherCommand(CommandTerm):
       # unit while pushed and exactly zero when idle -> k_precision everywhere.
       u = self.perturbation.direction
       self.k_target = cfg.k_precision + (cfg.k_soft - cfg.k_precision) * (u * u)
+
+    # --- exp-2 compliant torque target ---------------------------------------
+    if cfg.emit_torque_target:
+      self._compute_torque_target()
 
     # --- §1.5 scripted grasp + §1.6 weld -------------------------------------
     self._update_grasp(dt)

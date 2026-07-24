@@ -24,6 +24,7 @@ from typing import Literal
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
 from mjlab.envs.mdp.actions import CartesianImpedanceActionCfg
+from mjlab.envs.mdp.actions.arm_torque import ArmTorqueActionCfg
 from mjlab.managers.action_manager import ActionTermCfg
 from mjlab.managers.command_manager import CommandTermCfg
 from mjlab.managers.event_manager import EventTermCfg
@@ -52,6 +53,7 @@ OBJECT_NAME = "cube"
 
 TEACHER = "teacher"
 IMPEDANCE = "impedance"
+TORQUE = "arm_torque"
 GRASP = "grasp"
 
 
@@ -65,6 +67,9 @@ def make_tracking_env_cfg(
   supervise_stiffness: bool = False,
   stiffness_weight: float = 1.0,
   pull_sigma: float = 0.10,
+  actor_sees_pull_dir: bool = False,
+  torque_action: bool = False,
+  torque_weight: float = 1.0,
 ) -> ManagerBasedRlEnvCfg:
   """Build the tracking env for one curriculum stage (see module docstring).
 
@@ -93,26 +98,41 @@ def make_tracking_env_cfg(
   # of x_t the student is meant to reproduce.  Note also what the anchor is
   # *not*: feeding x_t in as the anchor would hand the policy the answer and
   # collapse the problem to "output max stiffness".
-  actions: dict[str, ActionTermCfg] = {
-    IMPEDANCE: CartesianImpedanceActionCfg(
-      entity_name="robot",
-      actuator_names=ARM_JOINTS,
-      frame_name=EE_SITE,
-      reference_mode="integrate",
-      # Per-step increment: 1 cm at 100 Hz == a 1 m/s reference slew limit, ~7x
-      # the nominal path speed and above the peak of the admittance return
-      # transient, without making the action so high-gain that useful commands
-      # live in the first 1% of its range.
-      delta_pos_scale=0.01,
-      leash_radius=0.10,
-      stiffness_range=(50.0, 2000.0),
-      damping_ratio=0.8,
-      effective_mass=2.0,
-      rot_stiffness=50.0,
-      nullspace_damping=2.0,
-      effort_limit=arm_effort_limit,
-    )
-  }
+  actions: dict[str, ActionTermCfg]
+  if torque_action:
+    # exp-2: the policy emits joint torque directly (residual over gravity comp)
+    # instead of Δx_ref + K. Compliance is supervised by matching the teacher's
+    # compliant torque target (mdp.torque_tracking); the impedance controller and
+    # its diagonal, unrotatable stiffness are gone entirely.
+    actions = {
+      TORQUE: ArmTorqueActionCfg(
+        entity_name="robot",
+        actuator_names=ARM_JOINTS,
+        effort_limit=tuple(arm_effort_limit) if arm_effort_limit else (),
+        gravity_comp=True,
+      )
+    }
+  else:
+    actions = {
+      IMPEDANCE: CartesianImpedanceActionCfg(
+        entity_name="robot",
+        actuator_names=ARM_JOINTS,
+        frame_name=EE_SITE,
+        reference_mode="integrate",
+        # Per-step increment: 1 cm at 100 Hz == a 1 m/s reference slew limit, ~7x
+        # the nominal path speed and above the peak of the admittance return
+        # transient, without making the action so high-gain that useful commands
+        # live in the first 1% of its range.
+        delta_pos_scale=0.01,
+        leash_radius=0.10,
+        stiffness_range=(50.0, 2000.0),
+        damping_ratio=0.8,
+        effective_mass=2.0,
+        rot_stiffness=50.0,
+        nullspace_damping=2.0,
+        effort_limit=arm_effort_limit,
+      )
+    }
   if with_object:
     actions[GRASP] = mdp.GraspActionCfg(
       entity_name="robot",
@@ -158,6 +178,13 @@ def make_tracking_env_cfg(
       func=mdp.grasp_phase_flag, params={"command_name": TEACHER}
     )
 
+  if actor_sees_pull_dir:
+    # DIAGNOSTIC: hand the actor the privileged pull direction to test whether
+    # observability (not the diagonal-K action space) is what blocks compliance.
+    actor_terms["pull_direction"] = ObservationTermCfg(
+      func=mdp.pull_direction, params={"command_name": TEACHER}
+    )
+
   critic_terms = {
     **actor_terms,
     "privileged_teacher": ObservationTermCfg(
@@ -183,6 +210,8 @@ def make_tracking_env_cfg(
       object_name=OBJECT_NAME if with_object else None,
       weld_enabled=with_object,
       supervise_stiffness=supervise_stiffness,
+      emit_torque_target=torque_action,
+      arm_joint_names=ARM_JOINTS if torque_action else (),
       # Freeze band left at baseline (0.015 / 0.04) so stiffness supervision is
       # the only variable changed from the un-supervised task.
       perturbation=mdp.PerturbationCfg(),
@@ -256,6 +285,12 @@ def make_tracking_env_cfg(
       weight=stiffness_weight,
       params={"command_name": TEACHER, "action_name": IMPEDANCE, "sigma": 0.5},
     )
+  if torque_action:
+    rewards["torque_tracking"] = RewardTermCfg(
+      func=mdp.torque_tracking,
+      weight=torque_weight,
+      params={"command_name": TEACHER, "action_name": TORQUE, "sigma": 0.25},
+    )
 
   # ── Terminations ────────────────────────────────────────────────────────────
   terminations = {
@@ -265,7 +300,9 @@ def make_tracking_env_cfg(
     "time_out": TerminationTermCfg(func=base_mdp.time_out, time_out=True),
   }
 
-  metrics = _diagnostics(with_object, force_sensor_names, normal_axis)
+  metrics = _diagnostics(
+    with_object, force_sensor_names, normal_axis, impedance=not torque_action
+  )
 
   entities = {}  # robot (+ object) filled in by the config layer
   cfg = ManagerBasedRlEnvCfg(
@@ -309,12 +346,23 @@ def make_tracking_env_cfg(
 
 
 def _diagnostics(
-  with_object: bool, force_sensor_names: tuple[str, ...], normal_axis: int
+  with_object: bool,
+  force_sensor_names: tuple[str, ...],
+  normal_axis: int,
+  impedance: bool = True,
 ) -> dict[str, MetricsTermCfg]:
-  """Spec §3.4 diagnostics."""
+  """Spec §3.4 diagnostics.
+
+  ``impedance=False`` (direct-torque variant) drops the commanded-stiffness
+  metrics, which read a ``CartesianImpedanceAction`` that is not present; the
+  physical ``effective_k_pull`` stands in for them.
+  """
   m: dict[str, MetricsTermCfg] = {
     "track_err": MetricsTermCfg(
       func=mdp.tracking_error, params={"command_name": TEACHER}
+    ),
+    "effective_k_pull": MetricsTermCfg(
+      func=mdp.effective_k_pull, params={"command_name": TEACHER}
     ),
     "track_err_unperturbed": MetricsTermCfg(
       func=mdp.tracking_error_by_phase,
@@ -331,18 +379,6 @@ def _diagnostics(
     "perturbed_fraction": MetricsTermCfg(
       func=mdp.perturbation_active, params={"command_name": TEACHER}
     ),
-    "k_parallel": MetricsTermCfg(
-      func=mdp.commanded_k_parallel,
-      params={"command_name": TEACHER, "action_name": IMPEDANCE},
-    ),
-    "k_perp": MetricsTermCfg(
-      func=mdp.commanded_k_perp,
-      params={"command_name": TEACHER, "action_name": IMPEDANCE},
-    ),
-    "k_anisotropy": MetricsTermCfg(
-      func=mdp.k_anisotropy_ratio,
-      params={"command_name": TEACHER, "action_name": IMPEDANCE},
-    ),
     "release_overshoot": MetricsTermCfg(
       func=mdp.release_overshoot, params={"command_name": TEACHER}, reduce="max"
     ),
@@ -356,6 +392,19 @@ def _diagnostics(
       func=mdp.path_frozen_while_pulled, params={"command_name": TEACHER}
     ),
   }
+  if impedance:
+    m["k_parallel"] = MetricsTermCfg(
+      func=mdp.commanded_k_parallel,
+      params={"command_name": TEACHER, "action_name": IMPEDANCE},
+    )
+    m["k_perp"] = MetricsTermCfg(
+      func=mdp.commanded_k_perp,
+      params={"command_name": TEACHER, "action_name": IMPEDANCE},
+    )
+    m["k_anisotropy"] = MetricsTermCfg(
+      func=mdp.k_anisotropy_ratio,
+      params={"command_name": TEACHER, "action_name": IMPEDANCE},
+    )
   if with_object:
     m["track_err_post_grasp"] = MetricsTermCfg(
       func=mdp.tracking_error_by_phase,

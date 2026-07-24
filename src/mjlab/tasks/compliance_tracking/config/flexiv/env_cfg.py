@@ -87,7 +87,11 @@ def _strengthen_gripper(robot_cfg: EntityCfg) -> None:
 
 
 def flexiv_tracking_env_cfg(
-  stage: Stage = "A", play: bool = False, supervise_stiffness: bool = False
+  stage: Stage = "A",
+  play: bool = False,
+  supervise_stiffness: bool = False,
+  actor_sees_pull_dir: bool = False,
+  torque_action: bool = False,
 ) -> ManagerBasedRlEnvCfg:
   with_object = stage in ("B", "C")
   cfg = make_tracking_env_cfg(
@@ -97,6 +101,8 @@ def flexiv_tracking_env_cfg(
     arm_effort_limit=FLEXIV_ARM_EFFORT_LIMIT,
     finger_closed_position=_FINGER_CLOSED,
     supervise_stiffness=supervise_stiffness,
+    actor_sees_pull_dir=actor_sees_pull_dir,
+    torque_action=torque_action,
   )
 
   # ── Robot ──────────────────────────────────────────────────────────────────

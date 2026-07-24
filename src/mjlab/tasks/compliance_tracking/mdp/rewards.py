@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
+from mjlab.envs.mdp.actions.arm_torque import ArmTorqueAction
 from mjlab.envs.mdp.actions.cartesian_impedance import CartesianImpedanceAction
 from mjlab.tasks.compliance_tracking.mdp.observations import (
   total_grasp_force,
@@ -140,3 +141,34 @@ def stiffness_tracking(
   k = _impedance(env, action_name).stiffness  # (N, 3), last commanded stiffness
   log_err = torch.square(torch.log(k) - torch.log(t.k_target)).mean(dim=-1)
   return torch.exp(-log_err / (sigma * sigma))
+
+
+def torque_tracking(
+  env: ManagerBasedRlEnv,
+  command_name: str = "teacher",
+  action_name: str = "arm_torque",
+  sigma: float = 0.25,
+) -> torch.Tensor:
+  """``exp(−mean_j ((τ_j − τ_target_j)/limit_j)² / σ²)`` — exp-2 supervision.
+
+  The per-joint error is normalized by that joint's torque limit before the
+  Gaussian, so the big base joints do not dominate and ``σ`` is a dimensionless
+  fraction-of-limit; raw-Nm errors of tens of Nm otherwise sit on the flat tail
+  of the Gaussian and give the policy no gradient.
+
+  The direct-torque policy has no commanded stiffness, so compliance cannot be
+  supervised the way ``stiffness_tracking`` does.  Instead the teacher emits a
+  full compliant joint-torque target ``τ_target`` (an anisotropic Cartesian
+  impedance about ``x_ref``, soft along the pull and stiff perpendicular — the
+  rotated stiffness a diagonal action K could not represent), and this term
+  scores the policy's commanded joint torque against it.  Reproducing it makes
+  the arm yield ``F_ext/k_soft`` along a *generic* push direction, which is the
+  behaviour the diagonal-K action space structurally could not produce.
+  """
+  t = _teacher(env, command_name)
+  assert t.torque_target is not None, "teacher.emit_torque_target must be True"
+  term = env.action_manager.get_term(action_name)
+  assert isinstance(term, ArmTorqueAction)
+  norm = (term.processed_torque - t.torque_target) / term.effort_limit.clamp(min=1e-3)
+  err = torch.square(norm).mean(dim=-1)
+  return torch.exp(-err / (sigma * sigma))

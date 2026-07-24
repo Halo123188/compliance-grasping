@@ -52,3 +52,42 @@ register_mjlab_task(
   rl_cfg=flexiv_tracking_ppo_runner_cfg("compliance_tracking_flexiv_b_sup"),
   runner_cls=ManipulationOnPolicyRunner,
 )
+
+# DIAGNOSTIC: anisotropic supervision + the privileged pull direction fed to the
+# actor. Isolates whether observability (not the diagonal-K action) blocks
+# directional compliance. K∥/K⊥ < 1 here => observability is the wall.
+register_mjlab_task(
+  task_id="Mjlab-ComplianceTracking-StageA-SupDiag-Flexiv",
+  env_cfg=flexiv_tracking_env_cfg(
+    stage="A", supervise_stiffness=True, actor_sees_pull_dir=True
+  ),
+  play_env_cfg=flexiv_tracking_env_cfg(
+    stage="A", play=True, supervise_stiffness=True, actor_sees_pull_dir=True
+  ),
+  rl_cfg=flexiv_tracking_ppo_runner_cfg("compliance_tracking_flexiv_a_supdiag"),
+  runner_cls=ManipulationOnPolicyRunner,
+)
+
+# EXP-2: direct joint-torque action. The policy emits torque and tracks the
+# teacher's compliant torque target (full rotatable anisotropic impedance about
+# x_ref), removing the diagonal-K representation wall. Two variants: proprio-only,
+# and +privileged pull direction (removes the observability wall too, so the two
+# effects can be separated).
+register_mjlab_task(
+  task_id="Mjlab-ComplianceTracking-StageA-Torque-Flexiv",
+  env_cfg=flexiv_tracking_env_cfg(stage="A", torque_action=True),
+  play_env_cfg=flexiv_tracking_env_cfg(stage="A", play=True, torque_action=True),
+  rl_cfg=flexiv_tracking_ppo_runner_cfg("compliance_tracking_flexiv_a_torque"),
+  runner_cls=ManipulationOnPolicyRunner,
+)
+register_mjlab_task(
+  task_id="Mjlab-ComplianceTracking-StageA-TorqueDiag-Flexiv",
+  env_cfg=flexiv_tracking_env_cfg(
+    stage="A", torque_action=True, actor_sees_pull_dir=True
+  ),
+  play_env_cfg=flexiv_tracking_env_cfg(
+    stage="A", play=True, torque_action=True, actor_sees_pull_dir=True
+  ),
+  rl_cfg=flexiv_tracking_ppo_runner_cfg("compliance_tracking_flexiv_a_torquediag"),
+  runner_cls=ManipulationOnPolicyRunner,
+)

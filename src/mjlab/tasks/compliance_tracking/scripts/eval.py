@@ -70,8 +70,12 @@ def evaluate(
 ) -> dict[str, float]:
   teacher = env.command_manager.get_term(TEACHER)
   assert isinstance(teacher, TeacherCommand)
-  impedance = env.action_manager.get_term(IMPEDANCE)
-  assert isinstance(impedance, CartesianImpedanceAction)
+  # Direct-torque variants have no impedance term / no commanded K; compliance is
+  # then read physically via effective_k_pull instead of k_parallel/k_perp.
+  impedance = None
+  if IMPEDANCE in env.action_manager.active_terms:
+    impedance = env.action_manager.get_term(IMPEDANCE)
+    assert isinstance(impedance, CartesianImpedanceAction)
 
   acc: dict[str, list[torch.Tensor]] = defaultdict(list)
   was_active = torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
@@ -98,10 +102,17 @@ def evaluate(
     err = torch.norm(teacher.ee_pos_w() - teacher.x_t, dim=-1)
     ref_err = torch.norm(teacher.ee_pos_w() - teacher.x_ref(), dim=-1)
 
-    k = impedance.stiffness
     u = teacher.perturbation.direction
-    k_par = (u * u * k).sum(dim=-1)
-    k_perp = (k.sum(dim=-1) - k_par) / 2.0
+    if impedance is not None:
+      k = impedance.stiffness
+      k_par = (u * u * k).sum(dim=-1)
+      k_perp = (k.sum(dim=-1) - k_par) / 2.0
+      acc["k_par"].append(k_par)
+      acc["k_perp"].append(k_perp)
+    # Physical effective stiffness along the pull: ‖F_ext‖ / yield_along_u.
+    yield_par = ((teacher.ee_pos_w() - teacher.x_ref()) * u).sum(dim=-1).abs()
+    f_ext_mag = torch.norm(teacher.perturbation.force, dim=-1)
+    acc["eff_k"].append(f_ext_mag / yield_par.clamp(min=0.01))
 
     acc["err"].append(err)
     acc["ref_err"].append(ref_err)
@@ -109,8 +120,6 @@ def evaluate(
     acc["release"].append(in_release.float())
     acc["grasped"].append(grasped.float())
     acc["unperturbed"].append((~active & ~in_release & ~grasped).float())
-    acc["k_par"].append(k_par)
-    acc["k_perp"].append(k_perp)
     acc["s"].append(teacher.s)
     acc["s_rate"].append(teacher.s_dot / teacher.path.s_rate)
     acc["overshoot"].append((ref_err - prev_ref_err).clamp(min=0.0))
@@ -132,23 +141,9 @@ def evaluate(
     "track_err_release_cm": _masked_mean(d["err"], release_m) * 100,
     "pulled_fraction": float(d["active"].mean()),
     "peak_f_ext_N": float(d["f_ext"].max()),
-    "K_parallel_pull": _masked_mean(d["k_par"], active_m),
-    "K_perp_pull": _masked_mean(d["k_perp"], active_m),
-    # THIS is the anisotropy figure to read: E[K_par] / E[K_perp].
-    #
-    # The per-step ratio averaged instead (K_anisotropy_meanratio below) is
-    # convex in K_par and therefore upward-biased by Jensen whenever the ratio
-    # is high-variance -- measured at 1.09 vs 1.80 on the Stage B policy, i.e.
-    # the bias can be larger than the effect. Both are reported so the gap
-    # between them stays visible; a large gap means the per-step distribution is
-    # heavy-tailed and only the ratio of means is interpretable.
-    "K_anisotropy_pull": (
-      _masked_mean(d["k_par"], active_m)
-      / max(_masked_mean(d["k_perp"], active_m), 1e-3)
-    ),
-    "K_anisotropy_meanratio": _masked_mean(
-      d["k_par"] / d["k_perp"].clamp(min=1e-3), active_m
-    ),
+    # Physical effective stiffness along the pull (N/m); the compliance figure
+    # that is well-defined with or without a commanded K. Lower == softer.
+    "effective_k_pull_Npm": _masked_mean(d["eff_k"], active_m),
     "release_overshoot_cm": _masked_mean(d["overshoot"], release_m) * 100,
     # Peak over the episode, not the last sample: episodes auto-reset, so the
     # final step of the trace often lands just past a boundary where s is 0.
@@ -156,6 +151,17 @@ def evaluate(
     "s_rate_pulled": _masked_mean(d["s_rate"], active_m),
     "s_rate_free": _masked_mean(d["s_rate"], ~active_m),
   }
+  if "k_par" in d:
+    kp = _masked_mean(d["k_par"], active_m)
+    kperp = _masked_mean(d["k_perp"], active_m)
+    out["K_parallel_pull"] = kp
+    out["K_perp_pull"] = kperp
+    # E[K_par]/E[K_perp]: ratio of means, not the Jensen-biased mean of ratios
+    # (that one, K_anisotropy_meanratio, is convex in K_par and reads high).
+    out["K_anisotropy_pull"] = kp / max(kperp, 1e-3)
+    out["K_anisotropy_meanratio"] = _masked_mean(
+      d["k_par"] / d["k_perp"].clamp(min=1e-3), active_m
+    )
   if with_object:
     out["track_err_post_grasp_cm"] = _masked_mean(d["err"], grasp_m) * 100
     out["grasp_force_err_N"] = _masked_mean(d["grasp_err"], grasp_m)
@@ -216,9 +222,17 @@ def main() -> None:
   width = max(len(k) for k in results)
   for key, value in results.items():
     print(f"  {key:<{width}}  {value:10.4f}")
-  ratio = results["K_anisotropy_pull"]
-  verdict = "softens along the pull" if ratio < 0.9 else "NOT softening along the pull"
-  print(f"\n  K_parallel/K_perp while pulled = {ratio:.3f} -> {verdict}")
+  if "K_anisotropy_pull" in results:
+    ratio = results["K_anisotropy_pull"]
+    verdict = (
+      "softens along the pull" if ratio < 0.9 else "NOT softening along the pull"
+    )
+    print(f"\n  K_parallel/K_perp while pulled = {ratio:.3f} -> {verdict}")
+  else:
+    # Direct-torque variant: no commanded K, read the physical effective stiffness.
+    eff = results["effective_k_pull_Npm"]
+    verdict = "soft along the pull" if eff < 400 else "stiff along the pull"
+    print(f"\n  effective K along pull = {eff:.0f} N/m -> {verdict}")
   if args.baseline:
     print(
       "  (expected for the oracle: it commands a fixed isotropic stiffness, so\n"

@@ -16,6 +16,9 @@ from mjlab.tasks.compliance_tracking.mdp.metrics import (
   commanded_k_perp as commanded_k_perp,
 )
 from mjlab.tasks.compliance_tracking.mdp.metrics import (
+  effective_k_pull as effective_k_pull,
+)
+from mjlab.tasks.compliance_tracking.mdp.metrics import (
   grasp_force_error_post_grasp as grasp_force_error_post_grasp,
 )
 from mjlab.tasks.compliance_tracking.mdp.metrics import (
@@ -70,6 +73,9 @@ from mjlab.tasks.compliance_tracking.mdp.observations import (
   privileged_teacher as privileged_teacher,
 )
 from mjlab.tasks.compliance_tracking.mdp.observations import (
+  pull_direction as pull_direction,
+)
+from mjlab.tasks.compliance_tracking.mdp.observations import (
   sanitized_last_action as sanitized_last_action,
 )
 from mjlab.tasks.compliance_tracking.mdp.observations import (
@@ -89,6 +95,9 @@ from mjlab.tasks.compliance_tracking.mdp.rewards import (
 )
 from mjlab.tasks.compliance_tracking.mdp.rewards import (
   stiffness_tracking as stiffness_tracking,
+)
+from mjlab.tasks.compliance_tracking.mdp.rewards import (
+  torque_tracking as torque_tracking,
 )
 from mjlab.tasks.compliance_tracking.mdp.rewards import (
   velocity_tracking as velocity_tracking,
