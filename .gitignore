@@ -12,6 +12,7 @@ motions/
 *_rerun*
 artifacts/
 .venv/
+.venv-deploy/
 render_robots.py
 benchmark_results/
 
