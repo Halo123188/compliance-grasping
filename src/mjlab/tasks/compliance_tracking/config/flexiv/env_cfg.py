@@ -92,6 +92,7 @@ def flexiv_tracking_env_cfg(
   supervise_stiffness: bool = False,
   actor_sees_pull_dir: bool = False,
   torque_action: bool = False,
+  aux_force: bool = False,
 ) -> ManagerBasedRlEnvCfg:
   with_object = stage in ("B", "C")
   cfg = make_tracking_env_cfg(
@@ -103,6 +104,7 @@ def flexiv_tracking_env_cfg(
     supervise_stiffness=supervise_stiffness,
     actor_sees_pull_dir=actor_sees_pull_dir,
     torque_action=torque_action,
+    aux_force=aux_force,
   )
 
   # ── Robot ──────────────────────────────────────────────────────────────────

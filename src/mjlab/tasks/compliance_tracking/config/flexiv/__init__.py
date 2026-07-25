@@ -4,7 +4,10 @@ from mjlab.tasks.manipulation.rl import ManipulationOnPolicyRunner
 from mjlab.tasks.registry import register_mjlab_task
 
 from .env_cfg import flexiv_tracking_env_cfg
-from .rl_cfg import flexiv_tracking_ppo_runner_cfg
+from .rl_cfg import (
+  flexiv_tracking_ppo_aux_runner_cfg,
+  flexiv_tracking_ppo_runner_cfg,
+)
 
 # Stage A: pre-grasp only. Reach + perturbations + s-freezing + admittance
 # target; no fingers, no object, no weld.
@@ -89,5 +92,20 @@ register_mjlab_task(
     stage="A", play=True, torque_action=True, actor_sees_pull_dir=True
   ),
   rl_cfg=flexiv_tracking_ppo_runner_cfg("compliance_tracking_flexiv_a_torquediag"),
+  runner_cls=ManipulationOnPolicyRunner,
+)
+
+# STEP B: the deployable one. Direct joint-torque action, proprioception-only
+# actor, plus the auxiliary force-estimation loss (rl_aux): the actor is taught
+# to *infer* F_ext from its own joint-torque history via a train-time head that
+# is discarded at deploy. This is the learned counterpart to TorqueDiag's
+# privileged pull direction -- same information, no privileged input at runtime.
+register_mjlab_task(
+  task_id="Mjlab-ComplianceTracking-StageA-TorqueAux-Flexiv",
+  env_cfg=flexiv_tracking_env_cfg(stage="A", torque_action=True, aux_force=True),
+  play_env_cfg=flexiv_tracking_env_cfg(
+    stage="A", play=True, torque_action=True, aux_force=True
+  ),
+  rl_cfg=flexiv_tracking_ppo_aux_runner_cfg("compliance_tracking_flexiv_a_torqueaux"),
   runner_cls=ManipulationOnPolicyRunner,
 )

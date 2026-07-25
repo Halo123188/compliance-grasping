@@ -70,6 +70,7 @@ def make_tracking_env_cfg(
   actor_sees_pull_dir: bool = False,
   torque_action: bool = False,
   torque_weight: float = 1.0,
+  aux_force: bool = False,
 ) -> ManagerBasedRlEnvCfg:
   """Build the tracking env for one curriculum stage (see module docstring).
 
@@ -198,6 +199,19 @@ def make_tracking_env_cfg(
     "actor": ObservationGroupCfg(actor_terms, enable_corruption=True),
     "critic": ObservationGroupCfg(critic_terms, enable_corruption=False),
   }
+  if aux_force:
+    # Auxiliary force-estimation LABEL: a standalone group no model set consumes,
+    # so it flows to the rollout storage untouched and AuxPPO reads it as the
+    # regression target for the actor's force head (see rl_aux). Never corrupted
+    # (it is ground truth) and never fed to the actor (proprioception only).
+    observations["ext_force"] = ObservationGroupCfg(
+      {
+        "force": ObservationTermCfg(
+          func=mdp.ext_force, params={"command_name": TEACHER}
+        )
+      },
+      enable_corruption=False,
+    )
 
   # ── Command: the analytic teacher (§1) ──────────────────────────────────────
   commands: dict[str, CommandTermCfg] = {

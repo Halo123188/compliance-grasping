@@ -166,6 +166,20 @@ def pull_direction(
   return _teacher(env, command_name).perturbation.direction
 
 
+def ext_force(env: ManagerBasedRlEnv, command_name: str = "teacher") -> torch.Tensor:
+  """Privileged external force ``F_ext`` (N, 3) — auxiliary-loss LABEL only.
+
+  This is *not* an actor input.  It lives in its own observation group that no
+  model set consumes, so it flows to the rollout storage untouched and is read
+  in ``AuxPPO.update`` as the regression target for the actor's force head.  The
+  policy is thereby taught to *estimate* the push from its own proprioceptive
+  (joint-torque) history at train time, with a strong per-step gradient, and
+  needs no privileged input at deployment — unlike ``pull_direction``, which
+  hands the answer in and cannot be deployed.  See ``rl_aux.AuxRNNModel``.
+  """
+  return _teacher(env, command_name).perturbation.force
+
+
 def privileged_perturbation(
   env: ManagerBasedRlEnv, command_name: str = "teacher"
 ) -> torch.Tensor:

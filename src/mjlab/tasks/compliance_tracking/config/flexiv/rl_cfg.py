@@ -10,11 +10,25 @@ smoothing rather than inference.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, fields, replace
+
 from mjlab.rl import (
   RslRlModelCfg,
   RslRlOnPolicyRunnerCfg,
   RslRlPpoAlgorithmCfg,
 )
+
+_AUX_ACTOR = "mjlab.tasks.compliance_tracking.rl_aux:AuxRNNModel"
+_AUX_PPO = "mjlab.tasks.compliance_tracking.rl_aux:AuxPPO"
+
+
+@dataclass
+class RslRlPpoAuxAlgorithmCfg(RslRlPpoAlgorithmCfg):
+  """PPO cfg + the force-head loss weight, resolved to ``AuxPPO``."""
+
+  aux_coef: float = 1.0
+  """Weight on the per-step force-estimation MSE added to the PPO objective."""
+  class_name: str = _AUX_PPO
 
 
 def _gru(distribution: bool) -> RslRlModelCfg:
@@ -61,3 +75,29 @@ def flexiv_tracking_ppo_runner_cfg(
     num_steps_per_env=32,  # BPTT truncation length
     max_iterations=max_iterations,
   )
+
+
+def flexiv_tracking_ppo_aux_runner_cfg(
+  experiment_name: str = "compliance_tracking_flexiv",
+  max_iterations: int = 15_000,
+  aux_coef: float = 1.0,
+) -> RslRlOnPolicyRunnerCfg:
+  """Runner cfg for the direct-torque policy with the auxiliary force loss.
+
+  Same PPO/GRU as the base tracking runner, but the actor resolves to
+  ``AuxRNNModel`` (adds the force head) and the algorithm to ``AuxPPO`` (adds the
+  regression term). Only the *actor* gets the head — the critic already sees
+  ``F_ext`` and needs no estimator. See ``rl_aux``.
+  """
+  cfg = flexiv_tracking_ppo_runner_cfg(experiment_name, max_iterations)
+  cfg.actor = replace(cfg.actor, class_name=_AUX_ACTOR)
+  base_alg = cfg.algorithm
+  cfg.algorithm = RslRlPpoAuxAlgorithmCfg(
+    **{
+      f.name: getattr(base_alg, f.name)
+      for f in fields(base_alg)
+      if f.name != "class_name"
+    },
+    aux_coef=aux_coef,
+  )
+  return cfg

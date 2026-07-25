@@ -55,6 +55,9 @@ from mjlab.tasks.compliance_tracking.mdp.observations import (
   ee_pos as ee_pos,
 )
 from mjlab.tasks.compliance_tracking.mdp.observations import (
+  ext_force as ext_force,
+)
+from mjlab.tasks.compliance_tracking.mdp.observations import (
   finger_state as finger_state,
 )
 from mjlab.tasks.compliance_tracking.mdp.observations import (
