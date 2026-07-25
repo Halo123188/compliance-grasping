@@ -167,7 +167,7 @@ def pull_direction(
 
 
 def ext_force(env: ManagerBasedRlEnv, command_name: str = "teacher") -> torch.Tensor:
-  """Privileged external force ``F_ext`` (N, 3) — auxiliary-loss LABEL only.
+  """Privileged external force ``F_ext / force_limit`` (N, 3) — aux LABEL only.
 
   This is *not* an actor input.  It lives in its own observation group that no
   model set consumes, so it flows to the rollout storage untouched and is read
@@ -176,8 +176,15 @@ def ext_force(env: ManagerBasedRlEnv, command_name: str = "teacher") -> torch.Te
   (joint-torque) history at train time, with a strong per-step gradient, and
   needs no privileged input at deployment — unlike ``pull_direction``, which
   hands the answer in and cannot be deployed.  See ``rl_aux.AuxRNNModel``.
+
+  Normalized by the perturbation force limit (the force is saturated to it) so
+  the label is dimensionless ~[-1, 1] and the aux MSE lands at O(1), comparable
+  to the PPO value/surrogate losses.  Left raw it is tens of N, and the aux term
+  swamps the control objective and makes ``aux_coef`` uninterpretable — the same
+  scale trap ``torque_tracking`` hit with raw-Nm errors.
   """
-  return _teacher(env, command_name).perturbation.force
+  t = _teacher(env, command_name)
+  return t.perturbation.force / max(t.cfg.perturbation.force_limit, 1e-6)
 
 
 def privileged_perturbation(
