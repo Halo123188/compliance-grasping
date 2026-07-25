@@ -33,6 +33,12 @@ from mjlab.tasks.compliance_tracking.mdp.teacher import TeacherCommand
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
 task, ckpt_dir = sys.argv[1], sys.argv[2]
+# Optional argv[3]: anchor displacement (m). Soft policies yield far, so the
+# default 0.20 lets the saturated 40 N push relax below the steady threshold once
+# the arm yields past ~15 cm and k_par cannot be read. A larger displacement keeps
+# the push saturated across a 30-45 cm yield, extending the measurable floor down
+# to k_par ~90 (= 40 N / 0.45 m).
+DISP = float(sys.argv[3]) if len(sys.argv) > 3 else 0.20
 DEV = "cuda:0"
 N = 256
 F_TEST = 10.0  # perpendicular test force (N); small vs the 40 N main push
@@ -49,7 +55,7 @@ pert = cfg.commands["teacher"].perturbation
 pert.p_no_perturbation = 0.0
 pert.num_events_range = (1, 1)
 pert.onset_s_range = (0.08, 0.08)
-pert.displacement_range = (0.20, 0.20)
+pert.displacement_range = (DISP, DISP)
 pert.hold_time_range = (6.0, 6.0)
 pert.ramp_time_range = (0.5, 0.5)
 pert.stiffness_range = (800.0, 800.0)
