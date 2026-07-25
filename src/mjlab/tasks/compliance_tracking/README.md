@@ -383,6 +383,52 @@ stiffness (e.g. output a soft-axis direction + two stiffness scalars, or command
    hold grasp force — all deployable), the *directional impedance* is not, for
    the two structural reasons above.
 
+## The diagnostic run, and where the wall actually is (exp-1, exp-2, aux)
+
+The "if pursued" diagnostic above was run, and it moved the wall twice.
+
+**exp-1 — feed the privileged `u` to the actor** (`…-SupDiag-Flexiv`, diagonal-K
+action). `K∥/K⊥` dropped from ~1.0 to **0.65** — exactly the diagonal-K floor
+`E[u_i²]`-mean predicts. So in the diagonal-K regime the binding wall was
+*observability*: hand the direction over and the policy softens as far as an
+axis-aligned stiffness structurally can.
+
+**exp-2 — direct joint-torque action** (`…-Torque-Flexiv`). Replacing the
+impedance action with a policy that outputs joint torque directly, tracking the
+teacher's compliant torque target (`mdp.torque_tracking`, a *rotatable*
+anisotropic impedance about `x_ref`), removes the representation wall. Under the
+steady-state probe (`_stiffness_probe.py`: one sustained generic push, `k_par`
+measured only near force saturation), the torque policy reaches **k_par ~390 N/m
+/ ~12 cm yield** — genuinely softer than the diagonal-K action's ~600–825. The
+*action space*, not sensing, was the binding constraint here.
+
+**aux — learn the force estimate** (`…-TorqueAux-Flexiv`, `rl_aux.py`). The
+deployable version of exp-1: a train-time head off the GRU latent regresses the
+privileged `F_ext` (label normalized by the force limit), so the actor learns to
+*infer* the push from its own joint-torque history with no privileged input at
+deploy. The head learns it well — final normalized MSE 0.0006–0.003, i.e. ~1–2 N
+RMS on a 40 N scale. But steady-state compliance does **not** improve:
+
+| torque variant | k_par (N/m) | yield |
+|---|---|---|
+| learned sensing (aux 0.5 / 2.0, ×2 seeds) | 350, 391, 621, 349 | 9–13 cm |
+| no sensing (baseline) | 389 | 11.8 cm |
+| privileged direction (TorqueDiag) | 407 | 11.0 cm |
+
+All ~390, and the aux runs did not even reduce seed variance (one stiffened to
+621). **Force observability is not the binding constraint for the torque policy**
+— neither learning the estimate nor handing the direction in pushes below the
+~390 the no-sensing baseline already reaches. What pins it there is the
+reward-level soft-vs-precision tension: the torque target is an impedance *about
+`x_ref`*, so yielding past ~12 cm costs tracking reward. A better internal force
+estimate cannot change that tradeoff. This is a clean negative result for the
+auxiliary-loss hypothesis, on top of a clean positive one for the action space.
+
+Not yet measured: `k_perp` for the torque policy. The probe reads `k_par` (along
+the pull) only; whether the ~390 is *directional* (soft along `u`, stiff
+perpendicular — the actual §4 goal) or merely isotropically soft needs a
+two-direction probe. That is the next decisive diagnostic, not more aux tuning.
+
 ## Known ceilings
 
 State these in any writeup; do not claim more.
