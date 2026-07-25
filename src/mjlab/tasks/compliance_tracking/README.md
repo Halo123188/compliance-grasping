@@ -415,19 +415,42 @@ RMS on a 40 N scale. But steady-state compliance does **not** improve:
 | no sensing (baseline) | 389 | 11.8 cm |
 | privileged direction (TorqueDiag) | 407 | 11.0 cm |
 
-All ~390, and the aux runs did not even reduce seed variance (one stiffened to
-621). **Force observability is not the binding constraint for the torque policy**
-— neither learning the estimate nor handing the direction in pushes below the
-~390 the no-sensing baseline already reaches. What pins it there is the
-reward-level soft-vs-precision tension: the torque target is an impedance *about
-`x_ref`*, so yielding past ~12 cm costs tracking reward. A better internal force
-estimate cannot change that tradeoff. This is a clean negative result for the
-auxiliary-loss hypothesis, on top of a clean positive one for the action space.
+All ~390 on `k_par`, and the aux runs did not even reduce seed variance (one
+went to 621). So *for the aux hypothesis* the result is negative: **force
+observability is not the binding constraint for the torque policy** — neither
+learning the estimate nor handing the direction in pushes `k_par` below the ~390
+the no-sensing baseline already reaches.
 
-Not yet measured: `k_perp` for the torque policy. The probe reads `k_par` (along
-the pull) only; whether the ~390 is *directional* (soft along `u`, stiff
-perpendicular — the actual §4 goal) or merely isotropically soft needs a
-two-direction probe. That is the next decisive diagnostic, not more aux tuning.
+**But `k_par` alone was the wrong lens, and the two-direction probe
+(`_stiffness_probe2.py`) corrects the headline.** It keeps the main push along
+`u` and injects a smaller perpendicular test force, so it reads both `k_par`
+(along) and `k_perp` (across):
+
+| torque variant | k_par | k_perp | **k∥/k⊥** | yield ∥ / ⊥ |
+|---|---|---|---|---|
+| aux 0.5 (s0, s1) | 357, 407 | 1431, 837 | **0.25, 0.49** | ~12 / ~1 cm |
+| aux 2.0 (s0, s1) | 583, 367 | 4246, 2228 | **0.14, 0.16** | ~10 / ~0.4 cm |
+| no sensing (baseline) | 430 | 1288 | **0.33** | 10.9 / 0.8 cm |
+| privileged dir (TorqueDiag) | 450 | 972 | **0.46** | 10.6 / 1.0 cm |
+
+Every torque policy is **strongly directional**: `K∥/K⊥ ≈ 0.14–0.49`, yielding
+~10–12 cm along the push but only 0.2–1.2 cm across it. The `~390 k_par` is not
+"stiff" — against `k_perp ~1300` it is *soft along the push and stiff
+perpendicular*, exactly the §4 goal. This is the real headline of exp-2: the
+**direct-torque action achieves directional compliance the diagonal-K action
+structurally could not** (~1.0), from a tracking-only-plus-torque-target reward.
+(The measurement is conservative: adding the test force tilts the sensed axis
+~14°, so `k_perp` reads slightly *low*, i.e. true directionality is at least this
+strong.)
+
+The aux loss remains a null result *relative to the baseline* — it does not
+improve `K∥/K⊥` over no-sensing (0.14–0.49 vs 0.33), consistent with observability
+not being the torque policy's binding constraint. The `k_par` floor (~390 vs
+target `k_soft`=200) and the residual seed variance are set by the reward-level
+soft-vs-precision tension (the torque target is an impedance *about `x_ref`*, so
+yielding past ~12 cm costs tracking reward), which a better force estimate cannot
+change. Video: `compliance_torqueaux_aux0.5_s0.mp4` (scene + joint-torque input +
+the aux head's live force estimate vs the true push + live `k_par`).
 
 ## Known ceilings
 
