@@ -173,6 +173,13 @@ def evaluate(
 def main() -> None:
   parser = argparse.ArgumentParser()
   parser.add_argument("--stage", default="A", choices=("A", "B", "C"))
+  parser.add_argument(
+    "--task",
+    default=None,
+    help="explicit task id, overriding --stage. Required for variant checkpoints "
+    "(Sup/SupDiag/Torque/TorqueAux) whose action/obs shapes differ from the base "
+    "stage task; loading such a checkpoint against the base task size-mismatches.",
+  )
   parser.add_argument("--checkpoint", default=None, help="policy .pt to evaluate")
   parser.add_argument("--baseline", action="store_true", help="run the oracle instead")
   parser.add_argument("--num-envs", type=int, default=64)
@@ -186,7 +193,10 @@ def main() -> None:
 
   torch.manual_seed(args.seed)
   with_object = args.stage in ("B", "C")
-  task = _TASK_IDS[args.stage]
+  # --task wins when given (variant checkpoints); otherwise map from --stage. The
+  # diagnostics that need the object (grasp force / weld) still key off --stage,
+  # so pass the matching stage alongside --task for a Stage B/C variant.
+  task = args.task if args.task is not None else _TASK_IDS[args.stage]
   cfg = load_env_cfg(task)
   cfg.scene.num_envs = args.num_envs
   # The oracle is privileged anyway; evaluating a student on noisy sensors is
