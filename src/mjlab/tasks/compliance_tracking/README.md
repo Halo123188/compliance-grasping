@@ -452,6 +452,41 @@ yielding past ~12 cm costs tracking reward), which a better force estimate canno
 change. Video: `compliance_torqueaux_aux0.5_s0.mp4` (scene + joint-torque input +
 the aux head's live force estimate vs the true push + live `k_par`).
 
+## Tuning k_par down: admittance_stiffness, not k_soft
+
+Asked to drive `k_par` (softness along the pull) below the `k_soft`=200 target,
+the obvious knob fails: sweeping `k_soft` (100/50/25) leaves `k_par` stuck at
+~350-440. `k_soft` only enters the *secondary* torque target; the *dominant*
+position reward (weight 2.0) tracks the admittance target `x_t`, and `x_t` yields
+`F_ext / admittance_stiffness` along the push (isotropic in the admittance,
+default 300 -> ~13 cm at 40 N -> `k_par` ~380). The policy faithfully follows
+`x_t`, so the along-push stiffness is pinned by `admittance_stiffness`, and
+`k_soft` is overridden.
+
+Sweeping `admittance_stiffness` (with `k_soft` matched) is the real lever, probed
+at a 0.60 m anchor so a soft policy's large yield stays measurable:
+
+| admittance_stiffness | k_par | yield ∥ | k_perp | task track_err |
+|---|---|---|---|---|
+| 300 (baseline) | 386 | 13.9 cm | 373 | 3.6 cm |
+| 150 | 254 | 22.9 cm | 315 | ~3.6 cm |
+| **100** | **190** | **30.0 cm** | 216 | 3.6 cm |
+| 60 | 596 | 12.2 cm | 399 | (regressed) |
+
+`admittance_stiffness=100` reaches **k_par ~190 (below the 200 target), yielding
+30 cm along the push**, with the task intact (3.6 cm tracking error, full-length
+episodes, no reach failure). `admittance_stiffness=60` *backfires* to `k_par`
+~596: it commands a ~67 cm yield the arm cannot physically reach, so training
+destabilizes and the policy regresses to stiff. So ~190 is the practical floor
+with this lever; softer needs more physical yield travel (workspace/geometry),
+not a lower stiffness. Video: `compliance_torque_soft_as100_kpar190.mp4`.
+
+Directionality honesty: at this clean 0.60 m anchor the ratio is `k_par/k_perp`
+~0.8-0.9 (mildly directional: soft along the push, slightly stiffer across). The
+earlier 0.14-0.49 came from a 0.20 m anchor whose spring adds a perpendicular
+restoring component that inflates the apparent `k_perp`; the honest figure is the
+~0.85 here.
+
 ## Known ceilings
 
 State these in any writeup; do not claim more.
