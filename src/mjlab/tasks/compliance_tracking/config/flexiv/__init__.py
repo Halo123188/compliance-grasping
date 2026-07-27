@@ -109,3 +109,16 @@ register_mjlab_task(
   rl_cfg=flexiv_tracking_ppo_aux_runner_cfg("compliance_tracking_flexiv_a_torqueaux"),
   runner_cls=ManipulationOnPolicyRunner,
 )
+
+# BARE: arm alone, no UMI gripper. EE is the link7 flange tool point; the human
+# wrench lands on link7; no fingers/object/weld (Stage A only). Tests the
+# compliance behaviour without the gripper's end mass/geometry.
+register_mjlab_task(
+  task_id="Mjlab-ComplianceTracking-StageA-TorqueBare-Flexiv",
+  env_cfg=flexiv_tracking_env_cfg(stage="A", torque_action=True, bare=True),
+  play_env_cfg=flexiv_tracking_env_cfg(
+    stage="A", play=True, torque_action=True, bare=True
+  ),
+  rl_cfg=flexiv_tracking_ppo_runner_cfg("compliance_tracking_flexiv_a_torquebare"),
+  runner_cls=ManipulationOnPolicyRunner,
+)

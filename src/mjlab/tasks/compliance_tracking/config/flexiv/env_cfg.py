@@ -21,6 +21,7 @@ from mjlab.asset_zoo.robots.flexiv_three_hand.constants import (
   FLEXIV_ARM_EFFORT_LIMIT,
   FT_FORCE_SENSOR_NAMES,
   FT_NORMAL_AXIS,
+  get_flexiv_bare_torque_robot_cfg,
   get_flexiv_torque_robot_cfg,
   get_ft_sensor_cfgs,
 )
@@ -58,6 +59,12 @@ _CUBE_SPAWN = (0.50, 0.0, _CUBE_HALF)
 _GRASP_BOX_MIN = (0.42, -0.10, _CUBE_HALF)
 _GRASP_BOX_MAX = (0.58, 0.10, _CUBE_HALF)
 
+# Bare-arm reach box: the flange EE is ~17.5 cm higher than the gripper EE at the
+# same joints, so the target region lives in free space at z ~ 0.20 (a similar
+# reach-down-and-forward motion, ending above the table instead of at it).
+_BARE_GRASP_BOX_MIN = (0.42, -0.10, 0.18)
+_BARE_GRASP_BOX_MAX = (0.58, 0.10, 0.24)
+
 # The stock UMI jaw makes only ~7.5 N of squeeze at full close (residual spring
 # travel x 200 N/m per finger), which is below the F_grasp the teacher scripts,
 # so the finger-force tracking reward would be unreachable by construction.
@@ -94,6 +101,7 @@ def flexiv_tracking_env_cfg(
   torque_action: bool = False,
   aux_force: bool = False,
   smooth_weight: float = 0.0,
+  bare: bool = False,
 ) -> ManagerBasedRlEnvCfg:
   with_object = stage in ("B", "C")
   cfg = make_tracking_env_cfg(
@@ -113,13 +121,22 @@ def flexiv_tracking_env_cfg(
   # Replace init_state / articulation with fresh objects rather than mutating:
   # get_flexiv_torque_robot_cfg() returns module-level shared defaults, and an
   # in-place edit would leak into every other Flexiv task.
-  robot_cfg = get_flexiv_torque_robot_cfg()
-  home = dict(_HOME_ARM_POSE)
-  home["left_finger_joint"] = 0.0
-  home["right_finger_joint"] = 0.0
-  robot_cfg.init_state = dataclasses.replace(robot_cfg.init_state, joint_pos=home)
-  if with_object:
-    _strengthen_gripper(robot_cfg)
+  if bare:
+    # Arm alone, no UMI gripper: the EE is the link7 flange tool point (grasp_site
+    # sits on link7), the human wrench still lands on link7, and there are no
+    # finger joints. Stage A only -- the grasp/weld path needs gripper_base.
+    assert not with_object, "bare arm supports Stage A only (no grasp/weld)"
+    robot_cfg = get_flexiv_bare_torque_robot_cfg()
+    home = dict(_HOME_ARM_POSE)
+    robot_cfg.init_state = dataclasses.replace(robot_cfg.init_state, joint_pos=home)
+  else:
+    robot_cfg = get_flexiv_torque_robot_cfg()
+    home = dict(_HOME_ARM_POSE)
+    home["left_finger_joint"] = 0.0
+    home["right_finger_joint"] = 0.0
+    robot_cfg.init_state = dataclasses.replace(robot_cfg.init_state, joint_pos=home)
+    if with_object:
+      _strengthen_gripper(robot_cfg)
 
   entities: dict[str, EntityCfg] = {"robot": robot_cfg}
   if with_object:
@@ -136,8 +153,8 @@ def flexiv_tracking_env_cfg(
   # ── Teacher geometry ───────────────────────────────────────────────────────
   teacher = cfg.commands[TEACHER]
   assert isinstance(teacher, TeacherCommandCfg)
-  teacher.grasp_box_min = _GRASP_BOX_MIN
-  teacher.grasp_box_max = _GRASP_BOX_MAX
+  teacher.grasp_box_min = _BARE_GRASP_BOX_MIN if bare else _GRASP_BOX_MIN
+  teacher.grasp_box_max = _BARE_GRASP_BOX_MAX if bare else _GRASP_BOX_MAX
 
   if play:
     cfg.scene.num_envs = 1
