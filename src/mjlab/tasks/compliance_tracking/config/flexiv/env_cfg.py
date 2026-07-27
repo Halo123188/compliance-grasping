@@ -102,6 +102,7 @@ def flexiv_tracking_env_cfg(
   aux_force: bool = False,
   smooth_weight: float = 0.0,
   bare: bool = False,
+  graded_push: bool = False,
 ) -> ManagerBasedRlEnvCfg:
   with_object = stage in ("B", "C")
   cfg = make_tracking_env_cfg(
@@ -115,6 +116,7 @@ def flexiv_tracking_env_cfg(
     torque_action=torque_action,
     aux_force=aux_force,
     smooth_weight=smooth_weight,
+    graded_push=graded_push,
   )
 
   # ── Robot ──────────────────────────────────────────────────────────────────

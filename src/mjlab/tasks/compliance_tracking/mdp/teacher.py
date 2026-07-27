@@ -88,6 +88,18 @@ class TeacherCommandCfg(CommandTermCfg):
   attach_body_name: str = "link7"
   """Body the human perturbation force is applied to (the wrist)."""
 
+  push_body_names: tuple[str, ...] = ()
+  """If non-empty, the push location is randomized per episode over these bodies
+  (base->wrist, e.g. link4..link7) instead of always ``attach_body_name``.  This
+  trains a policy that yields to a push *anywhere* on the arm, not just the
+  wrist."""
+
+  push_admittance_grade: tuple[float, ...] = ()
+  """Per-body admittance stiffness matching ``push_body_names`` order, so the
+  compliance is *graded* by where the push lands: soft (low k, big yield) near
+  the wrist, stiff (high k) near the base.  Empty falls back to the scalar
+  ``admittance_stiffness`` for every location."""
+
   # --- Task geometry ---------------------------------------------------------
   object_name: str | None = None
   """Scene entity grasped in Stage B+.  ``None`` (Stage A) means free-space
@@ -214,6 +226,18 @@ class TeacherCommand(CommandTerm):
     self._attach_body = body_ids[0]
 
     n, dev = self.num_envs, self.device
+    # Randomized / graded push location (optional). Resolve the candidate bodies
+    # and their per-location admittance stiffness once; sampling is per episode.
+    self._multi_push = len(cfg.push_body_names) > 0
+    if self._multi_push:
+      assert len(cfg.push_admittance_grade) == len(cfg.push_body_names), (
+        "push_admittance_grade must match push_body_names"
+      )
+      self._push_body_ids = [
+        self.robot.find_bodies(nm)[0][0] for nm in cfg.push_body_names
+      ]
+      self._push_grade = torch.tensor(cfg.push_admittance_grade, device=dev)
+      self._push_body_id_t = torch.tensor(self._push_body_ids, device=dev)
     z = lambda *s: torch.zeros(*s, device=dev)  # noqa: E731
 
     self.path = ReferencePath(n, dev, cfg.schedule)
@@ -248,6 +272,11 @@ class TeacherCommand(CommandTerm):
       * cfg.admittance_damping_ratio
       * math.sqrt(cfg.admittance_stiffness * cfg.admittance_mass)
     )
+    # Per-env admittance k / damping (graded by push location when _multi_push;
+    # otherwise the scalar above for every env). _push_slot indexes push_body_ids.
+    self._push_slot = torch.zeros(n, dtype=torch.long, device=dev)
+    self._k_adm = torch.full((n,), cfg.admittance_stiffness, device=dev)
+    self._damp_adm = torch.full((n,), self._damping, device=dev)
 
     # Weld bookkeeping.
     self._weld_eq_id: int | None = None
@@ -437,6 +466,17 @@ class TeacherCommand(CommandTerm):
     self.perturbation.reset(env_ids)
     self._release_weld(env_ids)
 
+    if self._multi_push:
+      slot = torch.randint(0, len(self.cfg.push_body_names), (n,), device=self.device)
+      self._push_slot[env_ids] = slot
+      k = self._push_grade[slot]
+      self._k_adm[env_ids] = k
+      self._damp_adm[env_ids] = (
+        2.0
+        * self.cfg.admittance_damping_ratio
+        * torch.sqrt(k * self.cfg.admittance_mass)
+      )
+
     if self.cfg.object_name is None:
       lo = torch.tensor(self.cfg.grasp_box_min, device=self.device)
       hi = torch.tensor(self.cfg.grasp_box_max, device=self.device)
@@ -483,16 +523,32 @@ class TeacherCommand(CommandTerm):
     x_ee = self.ee_pos_w()
 
     # --- perturbation: force first, everything downstream consumes it ---------
-    f_ext = self.perturbation.update(
-      dt,
-      self.s,
-      self.robot.data.body_com_pos_w[:, self._attach_body],
-      self.robot.data.body_com_vel_w[:, self._attach_body, :3],
-    )
+    # The spring anchors to the *push point*, which is per-env when the location
+    # is randomized (gather that body's CoM), else the fixed wrist.
+    if self._multi_push:
+      arange = torch.arange(self.num_envs, device=self.device)
+      body_per_env = self._push_body_id_t[self._push_slot]
+      x_att = self.robot.data.body_com_pos_w[arange, body_per_env]
+      v_att = self.robot.data.body_com_vel_w[arange, body_per_env, :3]
+    else:
+      x_att = self.robot.data.body_com_pos_w[:, self._attach_body]
+      v_att = self.robot.data.body_com_vel_w[:, self._attach_body, :3]
+    f_ext = self.perturbation.update(dt, self.s, x_att, v_att)
     torque = torch.zeros_like(f_ext)
-    self.robot.write_external_wrench_to_sim(
-      f_ext.unsqueeze(1), torque.unsqueeze(1), body_ids=[self._attach_body]
-    )
+    if self._multi_push:
+      # One wrench slot per candidate body; each env's force lands only in its
+      # sampled slot (write_external_wrench applies the same body list to all
+      # envs, so a per-env mask selects the location).
+      nb = len(self._push_body_ids)
+      forces = torch.zeros(self.num_envs, nb, 3, device=self.device)
+      forces[arange, self._push_slot] = f_ext
+      self.robot.write_external_wrench_to_sim(
+        forces, torch.zeros_like(forces), body_ids=self._push_body_ids
+      )
+    else:
+      self.robot.write_external_wrench_to_sim(
+        f_ext.unsqueeze(1), torque.unsqueeze(1), body_ids=[self._attach_body]
+      )
 
     # --- §1.2 freeze s by tracking deviation ---------------------------------
     x_ref = self.path.position(self.s)
@@ -504,8 +560,11 @@ class TeacherCommand(CommandTerm):
     # --- §1.3 integrate the reference impedance ------------------------------
     x_ref = self.path.position(self.s)
     xd_ref = self.path.velocity(self.s, self.s_dot)
-    k, m = cfg.admittance_stiffness, cfg.admittance_mass
-    acc = (f_ext - self._damping * (self.xd_t - xd_ref) - k * (self.x_t - x_ref)) / m
+    m = cfg.admittance_mass
+    # Per-env stiffness/damping so compliance can be graded by push location.
+    k = self._k_adm.unsqueeze(-1)
+    d = self._damp_adm.unsqueeze(-1)
+    acc = (f_ext - d * (self.xd_t - xd_ref) - k * (self.x_t - x_ref)) / m
     # Semi-implicit Euler: velocity first, then position from the new velocity.
     # Explicit Euler at this stiffness (omega_n ~ 12 rad/s) is stable at 100 Hz
     # but leaks energy in the wrong direction on the return transient.

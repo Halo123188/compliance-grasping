@@ -122,3 +122,17 @@ register_mjlab_task(
   rl_cfg=flexiv_tracking_ppo_runner_cfg("compliance_tracking_flexiv_a_torquebare"),
   runner_cls=ManipulationOnPolicyRunner,
 )
+
+# GRADED / GENERALIZE: the push lands anywhere on the arm (link4..link7,
+# randomized per episode) and the compliance is graded by location -- stiff near
+# the base, soft near the wrist. Trains a policy that yields to a push anywhere,
+# not just at the wrist, with the intended base->wrist softness profile.
+register_mjlab_task(
+  task_id="Mjlab-ComplianceTracking-StageA-TorqueGraded-Flexiv",
+  env_cfg=flexiv_tracking_env_cfg(stage="A", torque_action=True, graded_push=True),
+  play_env_cfg=flexiv_tracking_env_cfg(
+    stage="A", play=True, torque_action=True, graded_push=True
+  ),
+  rl_cfg=flexiv_tracking_ppo_runner_cfg("compliance_tracking_flexiv_a_torquegraded"),
+  runner_cls=ManipulationOnPolicyRunner,
+)

@@ -72,6 +72,7 @@ def make_tracking_env_cfg(
   torque_weight: float = 1.0,
   aux_force: bool = False,
   smooth_weight: float = 0.0,
+  graded_push: bool = False,
 ) -> ManagerBasedRlEnvCfg:
   """Build the tracking env for one curriculum stage (see module docstring).
 
@@ -232,6 +233,13 @@ def make_tracking_env_cfg(
       perturbation=mdp.PerturbationCfg(),
     )
   }
+  if graded_push:
+    # Randomize the push location over the arm (base->wrist) and grade the
+    # compliance by it: stiff near the base, soft near the wrist.
+    teacher_cmd = commands[TEACHER]
+    assert isinstance(teacher_cmd, mdp.TeacherCommandCfg)
+    teacher_cmd.push_body_names = ("link4", "link5", "link6", "link7")
+    teacher_cmd.push_admittance_grade = (800.0, 500.0, 300.0, 150.0)
 
   # ── Events ──────────────────────────────────────────────────────────────────
   events: dict[str, EventTermCfg] = {
