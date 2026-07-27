@@ -171,6 +171,7 @@ def main(
   displacement: float = 0.20,
   hold_s: float = 2.4,
   stiffness: float = 800.0,
+  push_dir: tuple[float, float, float] | None = None,
 ) -> None:
   cfg = load_env_cfg(task, play=True)
   cfg.scene.num_envs = 1
@@ -192,6 +193,17 @@ def main(
   teacher = env.command_manager.get_term("teacher")
   assert isinstance(teacher, TeacherCommand)
 
+  # A fixed push direction (e.g. horizontal) keeps a very soft policy from being
+  # dragged into the floor by a randomly-sampled downward pull -- the yield then
+  # reads cleanly as lateral compliance rather than a collision.
+  fixed_dir = None
+  if push_dir is not None:
+    import numpy as _np
+
+    d = _np.asarray(push_dir, dtype=_np.float32)
+    d = d / (float(_np.linalg.norm(d)) + 1e-9)
+    fixed_dir = torch.tensor(d, device=device)
+
   ckpt = _resolve_ckpt(checkpoint)
   print(f"loading {ckpt}")
   agent_cfg = load_rl_cfg(task)
@@ -210,6 +222,8 @@ def main(
 
   frames: list[np.ndarray] = []
   for t in range(steps):
+    if fixed_dir is not None:
+      teacher.perturbation._dir[:] = fixed_dir  # pin every event to push_dir
     with torch.no_grad():
       action = policy(obs)
       f_est = (

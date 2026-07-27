@@ -39,6 +39,10 @@ task, ckpt_dir = sys.argv[1], sys.argv[2]
 # the push saturated across a 30-45 cm yield, extending the measurable floor down
 # to k_par ~90 (= 40 N / 0.45 m).
 DISP = float(sys.argv[3]) if len(sys.argv) > 3 else 0.20
+# Optional argv[4]: body the push is applied to (default link7 = wrist).
+# Overriding it to link5/link4 tests whether a policy trained on wrist
+# pushes still yields compliantly when pushed further up the arm.
+ATTACH = sys.argv[4] if len(sys.argv) > 4 else None
 DEV = "cuda:0"
 N = 256
 F_TEST = 10.0  # perpendicular test force (N); small vs the 40 N main push
@@ -59,6 +63,8 @@ pert.displacement_range = (DISP, DISP)
 pert.hold_time_range = (6.0, 6.0)
 pert.ramp_time_range = (0.5, 0.5)
 pert.stiffness_range = (800.0, 800.0)
+if ATTACH is not None:
+  cfg.commands["teacher"].attach_body_name = ATTACH
 
 env = ManagerBasedRlEnv(cfg, device=DEV)
 teacher = env.command_manager.get_term("teacher")
@@ -123,7 +129,7 @@ kpar = mean(kpar_a)
 # k_perp from the mean perpendicular yield, differencing out per-step noise.
 yperp_mean = mean(yperp_a)
 kperp = F_TEST / max(yperp_mean, 1e-4)
-print(f"\n=== {task} :: {ckpt.name} ===")
+print(f"\n=== {task} :: {ckpt.name} :: push@{ATTACH or 'link7'} ===")
 print(f"  k_par  (along push)   {kpar:8.1f} N/m   yield {mean(ypar_a) * 100:5.2f} cm")
 print(f"  k_perp (across push)  {kperp:8.1f} N/m   yield {yperp_mean * 100:5.2f} cm")
 print(f"  k_par / k_perp        {kpar / max(kperp, 1e-6):8.2f}     (<1 = directional)")

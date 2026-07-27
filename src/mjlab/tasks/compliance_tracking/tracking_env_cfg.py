@@ -71,6 +71,7 @@ def make_tracking_env_cfg(
   torque_action: bool = False,
   torque_weight: float = 1.0,
   aux_force: bool = False,
+  smooth_weight: float = 0.0,
 ) -> ManagerBasedRlEnvCfg:
   """Build the tracking env for one curriculum stage (see module docstring).
 
@@ -304,6 +305,15 @@ def make_tracking_env_cfg(
       func=mdp.torque_tracking,
       weight=torque_weight,
       params={"command_name": TEACHER, "action_name": TORQUE, "sigma": 0.25},
+    )
+    # Joint-acceleration penalty to damp the fast, jerky reach/return swings a
+    # direct-torque policy tends to make. Weight 0 by default (no-op, so the
+    # registered task is unchanged); raise it via CLI --env.rewards.joint-smooth
+    # .weight to trade a little tracking latency for a smoother motion.
+    rewards["joint_smooth"] = RewardTermCfg(
+      func=base_mdp.joint_acc_l2,
+      weight=smooth_weight,
+      params={"asset_cfg": arm},
     )
 
   # ── Terminations ────────────────────────────────────────────────────────────
