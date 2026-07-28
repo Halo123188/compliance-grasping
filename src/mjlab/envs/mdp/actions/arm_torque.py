@@ -45,6 +45,21 @@ class ArmTorqueActionCfg(BaseActionCfg):
   """If True, add ``qfrc_bias`` (gravity + Coriolis) so the policy outputs a
   residual on top of a gravity-compensated hold."""
 
+  delta_frac: float | None = None
+  """If set, incremental (rate) mode: the policy output is a bounded torque
+  *increment* per step rather than an absolute torque.  Each step the commanded
+  torque moves by ``tanh(a) * delta_frac * effort_limit`` (clamped to the limit),
+  so the per-step torque change is capped at ``delta_frac`` of the budget --
+  structurally killing single-step spikes and the reset-time flailing.  ``None``
+  is absolute-torque mode."""
+
+  warm_start_steps: int = 0
+  """If >0, ramp the policy residual in from 0 over this many control steps after
+  each reset.  With ``gravity_comp=True`` the arm holds station on the gravity
+  term alone at reset (``tau = qfrc_bias``) and the learned residual fades in
+  linearly, killing the reset-time whip (the GRU/action state comes out of reset
+  cold and would otherwise inject a violent first move).  0 disables the ramp."""
+
   def __post_init__(self):
     self.transmission_type = TransmissionType.JOINT
 
@@ -69,6 +84,12 @@ class ArmTorqueAction(BaseAction):
     # DOF velocity addresses for indexing qfrc_bias (mirrors the impedance term).
     self._dof_ids = self._entity.indexing.joint_v_adr[self._target_ids]
     self._torque = torch.zeros(self.num_envs, self._num_targets, device=self.device)
+    # Incremental-mode state: the accumulated commanded torque (pre gravity comp).
+    self._cmd_state = torch.zeros(self.num_envs, self._num_targets, device=self.device)
+    if cfg.delta_frac is not None:
+      self._delta = cfg.delta_frac * self._limit  # per-step increment cap (J,)
+    # Steps since each env last reset, for the warm-start residual ramp.
+    self._since_reset = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
 
   @property
   def processed_torque(self) -> torch.Tensor:
@@ -84,10 +105,31 @@ class ArmTorqueAction(BaseAction):
     # Sanitize non-finite outputs to a safe hold before scaling.
     safe = torch.nan_to_num(actions, nan=0.0, posinf=0.0, neginf=0.0)
     self._raw_actions[:] = safe
-    self._processed_actions = torch.tanh(safe) * self._limit
+    if self.cfg.delta_frac is None:
+      # Absolute mode: tanh(a) maps directly to torque.
+      self._processed_actions = torch.tanh(safe) * self._limit
+    else:
+      # Incremental mode: integrate a bounded per-step increment.  The command
+      # can move by at most delta_frac of the budget each step, so torque is
+      # rate-limited by construction (no spikes, smooth ramp from the reset 0).
+      self._cmd_state = torch.clamp(
+        self._cmd_state + torch.tanh(safe) * self._delta, -self._limit, self._limit
+      )
+      self._processed_actions = self._cmd_state
+
+  def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
+    super().reset(env_ids)
+    self._cmd_state[env_ids if env_ids is not None else slice(None)] = 0.0
+    self._since_reset[env_ids if env_ids is not None else slice(None)] = 0
 
   def apply_actions(self) -> None:
     tau = self._processed_actions
+    if self.cfg.warm_start_steps > 0:
+      # Ramp the residual 0->1 over the first warm_start_steps control steps so
+      # the arm leaves reset on a pure gravity-comp hold, not a cold-GRU whip.
+      w = (self._since_reset.float() / self.cfg.warm_start_steps).clamp(max=1.0)
+      tau = tau * w.unsqueeze(-1)
+      self._since_reset += 1
     if self.cfg.gravity_comp:
       tau = tau + self._env.sim.data.qfrc_bias[:, self._dof_ids]
     tau = torch.clamp(tau, -self._limit, self._limit)

@@ -186,6 +186,9 @@ class CartesianImpedanceAction(ActionTerm):
     self._delta_pos = torch.zeros(self.num_envs, 3, device=self.device)
     self._stiffness = torch.zeros(self.num_envs, 3, device=self.device)
     self._damping = torch.zeros(self.num_envs, 3, device=self.device)
+    # Final commanded joint torque (post gravity comp / nullspace / clip), exposed
+    # for analysis and as a distillation target for a torque policy.
+    self._tau = torch.zeros(self.num_envs, self._num_joints, device=self.device)
 
     # Orientation lock target, captured at reset.
     self._lock_quat = torch.zeros(self.num_envs, 4, device=self.device)
@@ -383,6 +386,7 @@ class CartesianImpedanceAction(ActionTerm):
     if self._effort_limit is not None:
       tau = torch.clamp(tau, -self._effort_limit, self._effort_limit)
 
+    self._tau[:] = tau
     self._entity.set_joint_effort_target(tau, joint_ids=self._joint_ids)
 
   def _nullspace_torque(

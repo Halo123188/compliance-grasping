@@ -28,6 +28,8 @@ from mjlab.envs.mdp.actions.actions import TendonVelocityAction as TendonVelocit
 from mjlab.envs.mdp.actions.actions import (
   TendonVelocityActionCfg as TendonVelocityActionCfg,
 )
+from mjlab.envs.mdp.actions.arm_torque import ArmTorqueAction as ArmTorqueAction
+from mjlab.envs.mdp.actions.arm_torque import ArmTorqueActionCfg as ArmTorqueActionCfg
 from mjlab.envs.mdp.actions.cartesian_impedance import (
   CartesianImpedanceAction as CartesianImpedanceAction,
 )

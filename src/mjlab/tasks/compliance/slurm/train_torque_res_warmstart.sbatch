@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Option-2 warm-start: resume residual-torque training from the e15 IMPEDANCE
+# checkpoint.  The actor architecture is identical (37 obs -> GRU128 -> 7), so
+# e15's proprioceptive "am I being pulled?" feature extractor transfers; only the
+# output head (impedance params -> joint torque) has to be re-adapted by RL.
+# Tests whether the from-scratch torque failure was an exploration problem.
+#SBATCH --job-name=compliance_torque_res_warmstart
+#SBATCH --partition=gpu_a100
+#SBATCH --gres=gpu:rtxpro6000:1
+#SBATCH --nodes=1 --ntasks=1 --cpus-per-task=16
+#SBATCH --time=24:00:00
+#SBATCH --output=/home/yiboc/compliance-grasping/slurm_log/%x-%j.log
+#SBATCH --exclude=bos14-node-086
+set -euo pipefail
+cd /home/yiboc/compliance-grasping
+mkdir -p slurm_log
+export MUJOCO_GL=egl PYTHONUNBUFFERED=1
+echo "=== node: $(hostname)  job: ${SLURM_JOB_ID} ==="; nvidia-smi -L || true
+uv run train Mjlab-Compliance-Reach-Flexiv-TorqueResidual \
+  --env.scene.num-envs 1024 --agent.num-steps-per-env 32 \
+  --agent.max-iterations 7000 --agent.save-interval 200 \
+  --agent.logger tensorboard --agent.run-name torque_res_warmstart \
+  --agent.resume True --agent.load-run 2026-07-23_00-58-19_e15 \
+  --video False "$@"

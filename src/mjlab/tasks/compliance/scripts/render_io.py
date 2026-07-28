@@ -69,23 +69,49 @@ def _panel(canvas, fig, axes, info, H):
   for ax in axes:
     ax.clear()
 
-  k = info["k"]
-  # Soft = blue, stiff = red (log-scaled position in [50, 2000]).
-  kc = plt.cm.coolwarm((np.log(k) - np.log(50)) / (np.log(2000) - np.log(50)))
-  _bar(ax_k, ["Kx", "Ky", "Kz"], k, 50, 2000, kc, "OUTPUT  stiffness K (N/m)")
-  ax_k.set_xscale("log")
+  if info.get("mode") == "torque":
+    # Torque action: the two OUTPUT panels show the commanded joint torque and
+    # the raw policy action (both 7-dim) instead of stiffness / delta x_ref.
+    tc = info["torque_cmd"]
+    _bar(
+      ax_k,
+      [f"c{i + 1}" for i in range(7)],
+      tc,
+      -130,
+      130,
+      ["#8172b3"] * 7,
+      "OUTPUT  commanded torque (Nm)",
+      fmt="{:+.0f}",
+    )
+    ra = info["raw_action"]
+    _bar(
+      ax_dx,
+      [f"a{i + 1}" for i in range(7)],
+      ra,
+      -1,
+      1,
+      ["#4c72b0"] * 7,
+      "OUTPUT  raw action [-1,1]",
+      fmt="{:+.2f}",
+    )
+  else:
+    k = info["k"]
+    # Soft = blue, stiff = red (log-scaled position in [50, 2000]).
+    kc = plt.cm.coolwarm((np.log(k) - np.log(50)) / (np.log(2000) - np.log(50)))
+    _bar(ax_k, ["Kx", "Ky", "Kz"], k, 50, 2000, kc, "OUTPUT  stiffness K (N/m)")
+    ax_k.set_xscale("log")
 
-  dx = info["dx"] * 100.0  # cm
-  _bar(
-    ax_dx,
-    ["dx", "dy", "dz"],
-    dx,
-    -3,
-    3,
-    ["#4c72b0"] * 3,
-    "OUTPUT  delta x_ref (cm)",
-    fmt="{:+.2f}",
-  )
+    dx = info["dx"] * 100.0  # cm
+    _bar(
+      ax_dx,
+      ["dx", "dy", "dz"],
+      dx,
+      -3,
+      3,
+      ["#4c72b0"] * 3,
+      "OUTPUT  delta x_ref (cm)",
+      fmt="{:+.2f}",
+    )
   tau = info["tau"]
   _bar(
     ax_tau,
@@ -169,7 +195,11 @@ def main(
   human._push_time_range = (0.6, 1.2)
   human._second_push_prob = second_push_prob
   reach = env.command_manager.get_term("reach")
-  impedance = env.action_manager.get_term("impedance")
+  # Impedance task exposes a term named "impedance"; the direct-torque variants
+  # expose "torque".  Render adapts the two OUTPUT panels to whichever is present.
+  act_name = "impedance" if "impedance" in env.action_manager.active_terms else "torque"
+  act_term = env.action_manager.get_term(act_name)
+  is_torque = act_name == "torque"
 
   ckpt = _resolve_ckpt(checkpoint)
   print(f"loading {ckpt}")
@@ -202,15 +232,15 @@ def main(
       continue
     H = scene.shape[0]
 
-    k = impedance.stiffness[0].cpu().numpy()
     u = human.push_dir()[0].cpu().numpy()
     pushing = bool(human.is_pushing()[0].item())
-    if pushing and np.linalg.norm(u) > 1e-6:
-      k_par = float((u**2 * k).sum())
-      k_perp = float((k.sum() - k_par) / 2.0)
-      ratio = k_par / max(k_perp, 1e-6)
-    else:
-      ratio = None
+    ratio = None
+    if not is_torque:
+      k = act_term.stiffness[0].cpu().numpy()
+      if pushing and np.linalg.norm(u) > 1e-6:
+        k_par = float((u**2 * k).sum())
+        k_perp = float((k.sum() - k_par) / 2.0)
+        ratio = k_par / max(k_perp, 1e-6)
     f = float(torch.norm(human.external_force()[0]).item())
     dist = float(torch.norm(reach.command[0] - reach.ee_pos_w()[0]).item())
     tau = obs["actor"][0, 14:21].cpu().numpy()
@@ -222,11 +252,16 @@ def main(
       "dist": dist,
       "f": f,
       "ratio": ratio,
-      "k": k,
-      "dx": impedance._delta_pos[0].cpu().numpy(),
       "tau": tau,
       "ge": ge,
     }
+    if is_torque:
+      info["mode"] = "torque"
+      info["torque_cmd"] = act_term.processed_torque[0].cpu().numpy()
+      info["raw_action"] = act_term.raw_action[0].cpu().numpy()
+    else:
+      info["k"] = act_term.stiffness[0].cpu().numpy()
+      info["dx"] = act_term._delta_pos[0].cpu().numpy()
     panel = _panel(canvas, fig, axes, info, H)
     frames.append(np.concatenate([scene, panel], axis=1))
 

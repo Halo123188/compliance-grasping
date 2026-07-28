@@ -114,6 +114,46 @@ def stiffness_penalty(
   return (torch.log(k) / log_k_max).mean(dim=-1)
 
 
+def joint_acc_penalty(
+  env: ManagerBasedRlEnv,
+  asset_cfg=None,
+  cap: float = 50000.0,
+) -> torch.Tensor:
+  """Clamped sum-of-squared joint acceleration, for suppressing the reset whip.
+
+  Raw ``joint_acc_l2`` is dominated ~700000x by the reset-step numerical
+  transient (static arm -> large torque -> instantaneous huge acceleration), so
+  an unclamped penalty chases that spike and blows up the reward variance.
+  Clamping the per-step value at ``cap`` bounds the reset artefact while still
+  penalising the elevated (but finite) acceleration of a hard "whip to the
+  goal", which is the surgical target: steady reach / yield / return motion is
+  low-acceleration and barely touched.
+  """
+  from mjlab.managers.scene_entity_config import SceneEntityCfg
+
+  if asset_cfg is None:
+    asset_cfg = SceneEntityCfg("robot")
+  asset = env.scene[asset_cfg.name]
+  acc = asset.data.joint_acc[:, asset_cfg.joint_ids]
+  return torch.clamp(torch.sum(acc**2, dim=-1), max=cap)
+
+
+def torque_effort_penalty(
+  env: ManagerBasedRlEnv, action_name: str = "torque"
+) -> torch.Tensor:
+  """``mean((tau / tau_limit)**2)`` over the arm joints.
+
+  The direct-torque analogue of ``stiffness_penalty``: discourage the policy
+  from slamming maximum torque (bang-bang) and reward economy of effort.  Reads
+  the final commanded torque (post gravity comp / clip) so it penalises the same
+  quantity in the pure and residual variants.
+  """
+  term = env.action_manager.get_term(action_name)
+  tau = term.processed_torque  # (N, J)
+  limit = term._limit  # (J,)
+  return ((tau / limit) ** 2).mean(dim=-1)
+
+
 def _k_par_perp(env, event_name, action_name):
   human = _human(env, event_name)
   k = env.action_manager.get_term(action_name).stiffness  # (N, 3)
