@@ -1,0 +1,123 @@
+<mujoco model="two_finger_hand">
+  <compiler angle="radian" meshdir="meshes" autolimits="true"/>
+  <asset>
+    <mesh name="base_link" file="base_link.stl"/>
+    <mesh name="adapter" file="adapter.stl"/>
+    <mesh name="shim" file="shim.stl"/>
+    <mesh name="mount24" file="mount24.stl"/>
+    <mesh name="left_1" file="left_1.stl"/>
+    <mesh name="left_2" file="left_2.stl"/>
+    <mesh name="right_1" file="right_1.stl"/>
+    <mesh name="right_2" file="right_2.stl"/>
+    <mesh name="base_link_c0" file="collision/base_link_c0.stl"/>
+    <mesh name="base_link_c1" file="collision/base_link_c1.stl"/>
+    <mesh name="base_link_c2" file="collision/base_link_c2.stl"/>
+    <mesh name="base_link_c3" file="collision/base_link_c3.stl"/>
+    <mesh name="base_link_c4" file="collision/base_link_c4.stl"/>
+    <mesh name="base_link_c5" file="collision/base_link_c5.stl"/>
+    <mesh name="base_link_c6" file="collision/base_link_c6.stl"/>
+    <mesh name="base_link_c7" file="collision/base_link_c7.stl"/>
+    <mesh name="left_1_c0" file="collision/left_1_c0.stl"/>
+    <mesh name="left_1_c1" file="collision/left_1_c1.stl"/>
+    <mesh name="left_1_c2" file="collision/left_1_c2.stl"/>
+    <mesh name="left_1_c3" file="collision/left_1_c3.stl"/>
+    <mesh name="left_1_c4" file="collision/left_1_c4.stl"/>
+    <mesh name="left_1_c5" file="collision/left_1_c5.stl"/>
+    <mesh name="left_1_c6" file="collision/left_1_c6.stl"/>
+    <mesh name="left_1_c7" file="collision/left_1_c7.stl"/>
+    <mesh name="left_2_c0" file="collision/left_2_c0.stl"/>
+    <mesh name="left_2_c1" file="collision/left_2_c1.stl"/>
+    <mesh name="left_2_c2" file="collision/left_2_c2.stl"/>
+    <mesh name="left_2_c3" file="collision/left_2_c3.stl"/>
+    <mesh name="left_2_c4" file="collision/left_2_c4.stl"/>
+    <mesh name="left_2_c5" file="collision/left_2_c5.stl"/>
+    <mesh name="left_2_c6" file="collision/left_2_c6.stl"/>
+    <mesh name="left_2_c7" file="collision/left_2_c7.stl"/>
+    <mesh name="right_1_c0" file="collision/right_1_c0.stl"/>
+    <mesh name="right_1_c1" file="collision/right_1_c1.stl"/>
+    <mesh name="right_1_c2" file="collision/right_1_c2.stl"/>
+    <mesh name="right_1_c3" file="collision/right_1_c3.stl"/>
+    <mesh name="right_1_c4" file="collision/right_1_c4.stl"/>
+    <mesh name="right_1_c5" file="collision/right_1_c5.stl"/>
+    <mesh name="right_1_c6" file="collision/right_1_c6.stl"/>
+    <mesh name="right_1_c7" file="collision/right_1_c7.stl"/>
+    <mesh name="right_2_c0" file="collision/right_2_c0.stl"/>
+    <mesh name="right_2_c1" file="collision/right_2_c1.stl"/>
+    <mesh name="right_2_c2" file="collision/right_2_c2.stl"/>
+    <mesh name="right_2_c3" file="collision/right_2_c3.stl"/>
+    <mesh name="right_2_c4" file="collision/right_2_c4.stl"/>
+    <mesh name="right_2_c5" file="collision/right_2_c5.stl"/>
+    <mesh name="right_2_c6" file="collision/right_2_c6.stl"/>
+    <mesh name="right_2_c7" file="collision/right_2_c7.stl"/>
+  </asset>
+  <worldbody>
+    <body name="base_link">
+      <geom type="mesh" mesh="base_link" rgba="0.80 0.82 0.85 1" contype="0" conaffinity="0" group="1"/>
+      <geom type="mesh" mesh="adapter" rgba="0.60 0.75 0.60 1" contype="0" conaffinity="0" group="1" pos="0.0 0.0113 0.0315" quat="0 1 0 0"/>
+      <geom type="mesh" mesh="shim" rgba="0.72 0.55 0.86 1" contype="0" conaffinity="0" group="1" pos="0.0 0.0113 0.0075" quat="0 0 1 0"/>
+      <geom type="mesh" mesh="mount24" rgba="0.90 0.59 0.24 1" contype="0" conaffinity="0" group="1" pos="-0.035 0.0108 0.0005" quat="1 0 0 0"/>
+      <geom type="mesh" mesh="base_link_c0" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+      <geom type="mesh" mesh="base_link_c1" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+      <geom type="mesh" mesh="base_link_c2" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+      <geom type="mesh" mesh="base_link_c3" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+      <geom type="mesh" mesh="base_link_c4" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+      <geom type="mesh" mesh="base_link_c5" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+      <geom type="mesh" mesh="base_link_c6" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+      <geom type="mesh" mesh="base_link_c7" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+      <body name="left_1" pos="-0.028 -0.0037 -0.024">
+        <joint name="left_1" type="hinge" axis="0 1 0" range="-0.28 0.15" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
+        <geom type="mesh" mesh="left_1" rgba="0.42 0.62 0.90 1" contype="0" conaffinity="0" group="1"/>
+        <geom type="mesh" mesh="left_1_c0" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <geom type="mesh" mesh="left_1_c1" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <geom type="mesh" mesh="left_1_c2" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <geom type="mesh" mesh="left_1_c3" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <geom type="mesh" mesh="left_1_c4" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <geom type="mesh" mesh="left_1_c5" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <geom type="mesh" mesh="left_1_c6" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <geom type="mesh" mesh="left_1_c7" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <body name="left_2" pos="0 0 -0.0445">
+          <joint name="left_2" type="hinge" axis="0 1 0" range="-0.5 0.5" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
+          <geom type="mesh" mesh="left_2" rgba="0.10 0.30 0.70 1" contype="0" conaffinity="0" group="1"/>
+          <geom type="mesh" mesh="left_2_c0" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <geom type="mesh" mesh="left_2_c1" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <geom type="mesh" mesh="left_2_c2" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <geom type="mesh" mesh="left_2_c3" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <geom type="mesh" mesh="left_2_c4" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <geom type="mesh" mesh="left_2_c5" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <geom type="mesh" mesh="left_2_c6" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <geom type="mesh" mesh="left_2_c7" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        </body>
+      </body>
+      <body name="right_1" pos="0.028 -0.0037 -0.024">
+        <joint name="right_1" type="hinge" axis="0 1 0" range="-0.15 0.28" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
+        <geom type="mesh" mesh="right_1" rgba="0.92 0.48 0.48 1" contype="0" conaffinity="0" group="1"/>
+        <geom type="mesh" mesh="right_1_c0" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <geom type="mesh" mesh="right_1_c1" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <geom type="mesh" mesh="right_1_c2" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <geom type="mesh" mesh="right_1_c3" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <geom type="mesh" mesh="right_1_c4" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <geom type="mesh" mesh="right_1_c5" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <geom type="mesh" mesh="right_1_c6" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <geom type="mesh" mesh="right_1_c7" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <body name="right_2" pos="0 0 -0.0445">
+          <joint name="right_2" type="hinge" axis="0 1 0" range="-0.5 0.5" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
+          <geom type="mesh" mesh="right_2" rgba="0.62 0.0 0.0 1" contype="0" conaffinity="0" group="1"/>
+          <geom type="mesh" mesh="right_2_c0" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <geom type="mesh" mesh="right_2_c1" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <geom type="mesh" mesh="right_2_c2" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <geom type="mesh" mesh="right_2_c3" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <geom type="mesh" mesh="right_2_c4" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <geom type="mesh" mesh="right_2_c5" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <geom type="mesh" mesh="right_2_c6" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <geom type="mesh" mesh="right_2_c7" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <position name="left_1" joint="left_1" kp="1"/>
+    <position name="left_2" joint="left_2" kp="1"/>
+    <position name="right_1" joint="right_1" kp="1"/>
+    <position name="right_2" joint="right_2" kp="1"/>
+  </actuator>
+</mujoco>
