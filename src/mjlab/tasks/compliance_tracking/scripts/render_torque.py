@@ -172,8 +172,11 @@ def main(
   hold_s: float = 2.4,
   stiffness: float = 800.0,
   push_dir: tuple[float, float, float] | None = None,
+  warm_start_steps: int = 0,
 ) -> None:
   cfg = load_env_cfg(task, play=True)
+  if warm_start_steps > 0:
+    cfg.actions["arm_torque"].warm_start_steps = warm_start_steps
   cfg.scene.num_envs = 1
   cfg.viewer.width = 720
   cfg.viewer.height = 640
