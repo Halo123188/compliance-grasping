@@ -47,10 +47,9 @@ assert HAND_XML.exists(), f"Two-finger hand XML not found: {HAND_XML}"
 _MOUNT_POS = (-0.00799, 0.00797, 0.15550)  # m, in link7 frame
 _MOUNT_QUAT = (0.0, -0.923880, -0.382683, 0.0)  # wxyz
 
-# Grasp site (lift-reward target) between the fingertips, in the base_link frame.
-# The fingers hang along -z from the palm; the second segments reach ~-0.09 m.
-# PLACEHOLDER: tune against the rendered jaws at a representative grasp aperture.
-_GRASP_SITE_POS = (0.0, -0.0037, -0.09)
+# Grasp site (lift-reward target) between the fingertips, in the base_link frame,
+# down near where the jaws close on an object.
+_GRASP_SITE_POS = (0.0, 0.010, -0.115)
 
 # ── Actuator gains (PLACEHOLDER -- pending DC15 servo datasheet) ──────────────
 FINGER_STIFFNESS = 5.0  # N·m/rad
@@ -161,17 +160,15 @@ HOME_KEYFRAME = EntityCfg.InitialStateCfg(
 
 # All COACD convex parts (named "<segment>_c<i>") are the colliders.
 #
-# Non-interpenetration is guaranteed two ways that reinforce each other:
-#   1. Joint limits (in the XML) cap the proximal joints at ~0.28 rad, the angle
-#      at which the two fingertips just meet at the grasp centre (measured: they
-#      begin to cross past ~0.30).  The fingers therefore *cannot* rotate into a
-#      crossed configuration.
-#   2. Self-collision is left ENABLED (default contype/conaffinity) so finger-vs-
-#      finger contact is a physical backstop.  The coarse COACD hulls first touch
-#      right at the visual contact angle (~0.25 rad), so this stops the jaws at
-#      the moment the real surfaces meet rather than firing spuriously early.
-# Together: the limits keep the joints in a non-crossing range, and contact halts
-# them exactly at touch even under actuator force.
+# The jaws can close fully: finger self-collision (below) is the physical
+# backstop, so the fingers close until their surfaces meet and stop there rather
+# than passing through each other.  The XML joint limits (+-0.42 proximal, +-0.55
+# distal) are a generous safety cap, not the closing stop -- contact governs the
+# actual close.  Self-collision is left ENABLED (default contype/conaffinity);
+# the coarse COACD hulls first touch right at the visual contact angle, so
+# closing halts exactly when the real surfaces meet.  Verified: a 60-gain
+# actuator slammed to the proximal limit settles at surface contact
+# (|proximal| < 0.32), no interpenetration blow-up.
 HAND_COLLISION = CollisionCfg(
   geom_names_expr=(r".*_c\d+$",),
   condim={r".*_c\d+$": 6},

@@ -65,7 +65,7 @@
       <geom type="mesh" mesh="base_link_c6" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
       <geom type="mesh" mesh="base_link_c7" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
       <body name="left_1" pos="-0.028 -0.0037 -0.024">
-        <joint name="left_1" type="hinge" axis="0 1 0" range="-0.28 0.15" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
+        <joint name="left_1" type="hinge" axis="0 1 0" range="-0.42 0.15" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
         <geom type="mesh" mesh="left_1" rgba="0.42 0.62 0.90 1" contype="0" conaffinity="0" group="1"/>
         <geom type="mesh" mesh="left_1_c0" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
         <geom type="mesh" mesh="left_1_c1" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
@@ -76,7 +76,7 @@
         <geom type="mesh" mesh="left_1_c6" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
         <geom type="mesh" mesh="left_1_c7" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
         <body name="left_2" pos="0 0 -0.0445">
-          <joint name="left_2" type="hinge" axis="0 1 0" range="-0.5 0.5" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
+          <joint name="left_2" type="hinge" axis="0 1 0" range="-0.55 0.55" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
           <geom type="mesh" mesh="left_2" rgba="0.10 0.30 0.70 1" contype="0" conaffinity="0" group="1"/>
           <geom type="mesh" mesh="left_2_c0" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
           <geom type="mesh" mesh="left_2_c1" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
@@ -89,7 +89,7 @@
         </body>
       </body>
       <body name="right_1" pos="0.028 -0.0037 -0.024">
-        <joint name="right_1" type="hinge" axis="0 1 0" range="-0.15 0.28" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
+        <joint name="right_1" type="hinge" axis="0 1 0" range="-0.15 0.42" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
         <geom type="mesh" mesh="right_1" rgba="0.92 0.48 0.48 1" contype="0" conaffinity="0" group="1"/>
         <geom type="mesh" mesh="right_1_c0" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
         <geom type="mesh" mesh="right_1_c1" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
@@ -100,7 +100,7 @@
         <geom type="mesh" mesh="right_1_c6" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
         <geom type="mesh" mesh="right_1_c7" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
         <body name="right_2" pos="0 0 -0.0445">
-          <joint name="right_2" type="hinge" axis="0 1 0" range="-0.5 0.5" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
+          <joint name="right_2" type="hinge" axis="0 1 0" range="-0.55 0.55" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
           <geom type="mesh" mesh="right_2" rgba="0.62 0.0 0.0 1" contype="0" conaffinity="0" group="1"/>
           <geom type="mesh" mesh="right_2_c0" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
           <geom type="mesh" mesh="right_2_c1" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
