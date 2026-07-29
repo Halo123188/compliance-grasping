@@ -436,9 +436,10 @@ FLEXIV_ARM_DQ_MAX: tuple[float, ...] = (2.09, 2.09, 2.44, 2.44, 4.89, 4.89, 4.89
 # Physical dof damping d = effort_limit / dq_max, so sustained full torque
 # reaches the rated speed rather than diverging. j7 gets heavy damping to freeze
 # the (locked) wrist roll.
-_ARM_DAMPING_PHYS: tuple[float, ...] = tuple(
+_ARM_DAMPING_PHYS_J16: tuple[float, ...] = tuple(
   e / v for e, v in zip(FLEXIV_ARM_EFFORT_LIMIT[:6], FLEXIV_ARM_DQ_MAX[:6], strict=True)
-) + (60.0,)
+)
+_J7_LOCK_DAMPING: float = 60.0
 
 # Effort limit with j7 authority zeroed out (locked roll): the policy's j7 output
 # is clamped to ~gravity-comp only; damping holds it at home.
@@ -450,9 +451,13 @@ def _make_bare_hwlimited_spec_fn(damping_scale: float):
 
   def _spec() -> mujoco.MjSpec:
     spec = get_bare_torque_spec()
+    # j1..j6 physical damping scaled by damping_scale; j7 fixed lock damping so
+    # scale=0 still freezes the null-space roll.
     damp = {
-      nm: _ARM_DAMPING_PHYS[i] * damping_scale for i, nm in enumerate(_ARM_JOINTS)
+      nm: _ARM_DAMPING_PHYS_J16[i] * damping_scale
+      for i, nm in enumerate(_ARM_JOINTS[:6])
     }
+    damp[_ARM_JOINTS[6]] = _J7_LOCK_DAMPING
     for j in spec.joints:
       nm = j.name.lstrip("/")
       if nm in damp:

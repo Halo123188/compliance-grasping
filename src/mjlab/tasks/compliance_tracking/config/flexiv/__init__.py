@@ -144,6 +144,31 @@ register_mjlab_task(
   runner_cls=ManipulationOnPolicyRunner,
 )
 
+# HW-LIMITED (SOFT): same j7 lock + velocity-limit penalty, but NO j1-j6 dof
+# damping (damping_scale=0). The damping caps peak speed as a hard wall but also
+# resists the yielding motion, which stiffened the arm ~9x (k_par 1818 vs 193).
+# This variant relies on the j7 lock (the null-space blowup) plus a tunable
+# velocity penalty (CLI --env.rewards.joint-vel-limit.weight) to keep speed
+# bounded while preserving compliance.
+register_mjlab_task(
+  task_id="Mjlab-ComplianceTracking-StageA-TorqueBareHWSoft-Flexiv",
+  env_cfg=flexiv_tracking_env_cfg(
+    stage="A", torque_action=True, bare=True, hw_limits=True, damping_scale=0.0
+  ),
+  play_env_cfg=flexiv_tracking_env_cfg(
+    stage="A",
+    play=True,
+    torque_action=True,
+    bare=True,
+    hw_limits=True,
+    damping_scale=0.0,
+  ),
+  rl_cfg=flexiv_tracking_ppo_runner_cfg(
+    "compliance_tracking_flexiv_a_torquebarehwsoft"
+  ),
+  runner_cls=ManipulationOnPolicyRunner,
+)
+
 register_mjlab_task(
   task_id="Mjlab-ComplianceTracking-StageA-TorqueGraded-Flexiv",
   env_cfg=flexiv_tracking_env_cfg(stage="A", torque_action=True, graded_push=True),
