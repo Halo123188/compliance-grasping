@@ -44,26 +44,43 @@ checked against the real robot before anything moves.
 
 Control backends
 ----------------
-``rt_torque`` (faithful)
-  ``RT_JOINT_TORQUE`` + ``StreamJointTorque(tau, enable_gravity_comp=True)`` at
-  1 kHz, holding each policy torque for 10 ticks — exactly the sim's
-  ``decimation=10``.  **Needs a Linux host**: every macOS flexivrdk wheel that
-  supports the Rizon 4S has the RT layer stripped, so this backend is simply
-  absent there (``flexivrdk.Mode`` has no ``RT_*`` entries).  The 1.9.0
-  ``manylinux_2_35`` wheels (glibc >= 2.35, i.e. Ubuntu 22.04+; cp310/cp312/
-  cp313, x86_64 or aarch64) do ship ``RT_JOINT_TORQUE`` and do list ``Rizon4s``
-  as a supported model — verified against the wheel binary.  The robot faults if
-  more than ``--timeliness-limit`` percent of commands arrive late, so watch the
-  overrun figure printed on exit.
-
-``joint_impedance`` (fallback, approximate)
+``joint_impedance`` (the only one that runs from Python today)
   ``NRT_JOINT_IMPEDANCE``: the robot runs ``tau = K_q (q_d - q) - D_q qdot +
   g(q)``, so commanding ``q_d = q_meas + tau_res / K_q`` makes it a torque source
-  to first order.  This *does* run on macOS.  Deviations from sim, in order of
-  size: the ``-D_q qdot`` term adds damping the policy never trained against; the
-  command is NRT (100 Hz, interpolated) rather than a 1 kHz hold; and torque
-  saturates at ``K_q * max_offset`` (printed at startup).  Use it to validate the
-  observation pipeline and to see the gross behaviour, not to judge the feel.
+  to first order.  Deviations from sim, in order of size: the ``-D_q qdot`` term
+  adds damping the policy never trained against; the command is NRT (100 Hz,
+  interpolated) rather than a 1 kHz hold; and torque saturates at
+  ``K_q * max_offset`` (printed at startup).  Good for validating the
+  observation pipeline and seeing the gross behaviour, not for judging the feel.
+
+``rt_torque`` (faithful, but NOT reachable from the Python wheel — see below)
+  ``RT_JOINT_TORQUE`` + ``StreamJointTorque(tau, enable_gravity_comp=True)`` at
+  1 kHz, holding each policy torque for 10 ticks — exactly the sim's
+  ``decimation=10``.  ``supported()`` gates it, and on every released wheel that
+  gate is False, so ``--backend auto`` never picks it.
+
+Why ``rt_torque`` is currently unreachable
+------------------------------------------
+This is a **binding** limitation, not a platform one — the earlier belief that
+"Linux has RT, macOS does not" is wrong.  Checked against every ``flexivrdk``
+wheel on PyPI (1.6.0 … 2.1.0, macOS *and* manylinux):
+
+  * 1.6.0–2.0.0 support ``Rizon4s`` but register **no** ``Stream*`` method and
+    no ``RT_*`` mode in the Python module, on either platform.  The bundled C++
+    library does contain ``flexiv::rdk::Robot::StreamJointTorque`` — only the
+    pybind layer omits it.  Flexiv's own ``example_py/`` for v1.9 confirms the
+    intent: every Python example is named ``*_non_realtime_*``, while the C++
+    ``example/intermediate3_realtime_joint_torque_control.cpp`` drives
+    ``StreamJointTorque`` from an RT ``Scheduler``.
+  * 2.1.0 does register ``StreamJointTorque``/``StreamJointPosition``/
+    ``StreamCartesianMotionForce`` — but its model list dropped every Rizon
+    (``Enlight_*`` / ``MICO_*`` only), so it refuses to connect to a Rizon 4S.
+
+So no released Python wheel gives joint-torque streaming on this arm.  Faithful
+route-A control needs the **C++** RDK (v1.9 branch, Linux, RT ``Scheduler``),
+either as a standalone program or as a thin pybind shim that owns the 1 kHz
+loop and takes a 100 Hz torque setpoint from this script.  ``RtTorqueBackend``
+is kept ready for exactly that: give it a binding and it lights up.
 
 Running it
 ----------
@@ -487,8 +504,11 @@ class RizonAdapter:
 class RtTorqueBackend:
   """``RT_JOINT_TORQUE``: stream the residual at 1 kHz, gravity comp on-robot.
 
-  The faithful backend. Available only where the wheel ships the RT layer
-  (Linux); ``supported()`` is False on macOS.
+  The faithful backend, kept ready but **inert**: no released ``flexivrdk``
+  Python wheel binds ``StreamJointTorque`` for a Rizon (see the module
+  docstring), so ``supported()`` returns False everywhere today.  It becomes
+  live the moment a binding exists — a pybind shim over the C++ RDK, or a
+  future wheel that both registers ``Stream*`` and supports the model.
 
   The robot monitors command *timeliness* and faults once too large a fraction
   of commands arrive late (default 2%).  A pure-Python 1 kHz loop on a stock
@@ -906,10 +926,13 @@ def main() -> None:
   if args.backend == "rt_torque" or (args.backend == "auto" and rt_ok):
     if not rt_ok:
       raise SystemExit(
-        "This flexivrdk wheel has no RT layer (Mode has no RT_JOINT_TORQUE and "
-        "Robot has no StreamJointTorque). Every macOS wheel that supports the "
-        "Rizon 4S ships without it — run from a Linux host with flexivrdk 1.9, "
-        "or use --backend joint_impedance (approximate)."
+        "This flexivrdk wheel does not bind RT joint torque (Mode has no "
+        "RT_JOINT_TORQUE and Robot has no StreamJointTorque). No released wheel "
+        "does for a Rizon — 1.6.0-2.0.0 support the model but bind no Stream* "
+        "method on any platform, and 2.1.0 binds them but dropped every Rizon. "
+        "Switching to a Linux host does not change this. Use --backend "
+        "joint_impedance (approximate), or drive StreamJointTorque from the C++ "
+        "RDK v1.9 and expose it to Python with a pybind shim."
       )
     backend = RtTorqueBackend(adapter, args.timeliness_limit)
   else:
