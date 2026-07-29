@@ -127,6 +127,23 @@ register_mjlab_task(
 # randomized per episode) and the compliance is graded by location -- stiff near
 # the base, soft near the wrist. Trains a policy that yields to a push anywhere,
 # not just at the wrist, with the intended base->wrist softness profile.
+# HW-LIMITED BARE: the deployable arm-only policy with the hardware speed
+# envelope baked in -- dof damping sized so full torque reaches ~dq_max (not
+# infinity), a joint-velocity penalty for margin, and the null-space wrist roll
+# (j7) locked (near-zero torque authority + heavy damping). Fixes the sim-to-real
+# too-fast blowup where the torque policy commanded unrealizable joint speeds.
+register_mjlab_task(
+  task_id="Mjlab-ComplianceTracking-StageA-TorqueBareHW-Flexiv",
+  env_cfg=flexiv_tracking_env_cfg(
+    stage="A", torque_action=True, bare=True, hw_limits=True
+  ),
+  play_env_cfg=flexiv_tracking_env_cfg(
+    stage="A", play=True, torque_action=True, bare=True, hw_limits=True
+  ),
+  rl_cfg=flexiv_tracking_ppo_runner_cfg("compliance_tracking_flexiv_a_torquebarehw"),
+  runner_cls=ManipulationOnPolicyRunner,
+)
+
 register_mjlab_task(
   task_id="Mjlab-ComplianceTracking-StageA-TorqueGraded-Flexiv",
   env_cfg=flexiv_tracking_env_cfg(stage="A", torque_action=True, graded_push=True),

@@ -18,9 +18,12 @@ from __future__ import annotations
 import dataclasses
 
 from mjlab.asset_zoo.robots.flexiv_three_hand.constants import (
+  FLEXIV_ARM_DQ_MAX,
   FLEXIV_ARM_EFFORT_LIMIT,
+  FLEXIV_ARM_EFFORT_LIMIT_J7LOCK,
   FT_FORCE_SENSOR_NAMES,
   FT_NORMAL_AXIS,
+  get_flexiv_bare_torque_hwlimited_robot_cfg,
   get_flexiv_bare_torque_robot_cfg,
   get_flexiv_torque_robot_cfg,
   get_ft_sensor_cfgs,
@@ -103,13 +106,19 @@ def flexiv_tracking_env_cfg(
   smooth_weight: float = 0.0,
   bare: bool = False,
   graded_push: bool = False,
+  hw_limits: bool = False,
+  damping_scale: float = 1.0,
+  vel_limit_weight: float = -0.01,
 ) -> ManagerBasedRlEnvCfg:
   with_object = stage in ("B", "C")
+  if hw_limits:
+    assert bare, "hw_limits is wired for the bare arm variant only"
+  arm_eff = FLEXIV_ARM_EFFORT_LIMIT_J7LOCK if hw_limits else FLEXIV_ARM_EFFORT_LIMIT
   cfg = make_tracking_env_cfg(
     stage=stage,
     force_sensor_names=FORCE_SENSORS if with_object else (),
     normal_axis=FT_NORMAL_AXIS,
-    arm_effort_limit=FLEXIV_ARM_EFFORT_LIMIT,
+    arm_effort_limit=arm_eff,
     finger_closed_position=_FINGER_CLOSED,
     supervise_stiffness=supervise_stiffness,
     actor_sees_pull_dir=actor_sees_pull_dir,
@@ -117,6 +126,8 @@ def flexiv_tracking_env_cfg(
     aux_force=aux_force,
     smooth_weight=smooth_weight,
     graded_push=graded_push,
+    vel_limit_weight=vel_limit_weight if hw_limits else 0.0,
+    dq_max=FLEXIV_ARM_DQ_MAX if hw_limits else (),
   )
 
   # ── Robot ──────────────────────────────────────────────────────────────────
@@ -128,7 +139,11 @@ def flexiv_tracking_env_cfg(
     # sits on link7), the human wrench still lands on link7, and there are no
     # finger joints. Stage A only -- the grasp/weld path needs gripper_base.
     assert not with_object, "bare arm supports Stage A only (no grasp/weld)"
-    robot_cfg = get_flexiv_bare_torque_robot_cfg()
+    robot_cfg = (
+      get_flexiv_bare_torque_hwlimited_robot_cfg(damping_scale)
+      if hw_limits
+      else get_flexiv_bare_torque_robot_cfg()
+    )
     home = dict(_HOME_ARM_POSE)
     robot_cfg.init_state = dataclasses.replace(robot_cfg.init_state, joint_pos=home)
   else:

@@ -73,6 +73,9 @@ def make_tracking_env_cfg(
   aux_force: bool = False,
   smooth_weight: float = 0.0,
   graded_push: bool = False,
+  vel_limit_weight: float = 0.0,
+  dq_max: tuple[float, ...] = (),
+  dq_guard_frac: float = 0.5,
 ) -> ManagerBasedRlEnvCfg:
   """Build the tracking env for one curriculum stage (see module docstring).
 
@@ -323,6 +326,17 @@ def make_tracking_env_cfg(
       weight=smooth_weight,
       params={"asset_cfg": arm},
     )
+    # Joint-velocity limit penalty: keep the policy's motion inside the hardware
+    # speed envelope (MuJoCo enforces no velocity cap, so a torque policy learns
+    # unrealizable speeds that trip the deploy guardrail). Only the excess over
+    # dq_guard_frac*dq_max is penalized. Weight 0 default (no-op); enable with
+    # dq_max + a negative weight via the hw-limited task variant.
+    if vel_limit_weight != 0.0 and dq_max:
+      rewards["joint_vel_limit"] = RewardTermCfg(
+        func=mdp.joint_vel_limit_l2,
+        weight=vel_limit_weight,
+        params={"asset_cfg": arm, "dq_max": dq_max, "frac": dq_guard_frac},
+      )
 
   # ── Terminations ────────────────────────────────────────────────────────────
   terminations = {

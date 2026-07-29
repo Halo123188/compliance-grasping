@@ -94,6 +94,9 @@ from mjlab.tasks.compliance_tracking.mdp.rewards import (
   finger_force_tracking as finger_force_tracking,
 )
 from mjlab.tasks.compliance_tracking.mdp.rewards import (
+  joint_vel_limit_l2 as joint_vel_limit_l2,
+)
+from mjlab.tasks.compliance_tracking.mdp.rewards import (
   position_tracking as position_tracking,
 )
 from mjlab.tasks.compliance_tracking.mdp.rewards import (

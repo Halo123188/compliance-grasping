@@ -37,6 +37,7 @@ import torch
 
 from mjlab.envs.mdp.actions.arm_torque import ArmTorqueAction
 from mjlab.envs.mdp.actions.cartesian_impedance import CartesianImpedanceAction
+from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.tasks.compliance_tracking.mdp.observations import (
   total_grasp_force,
 )
@@ -172,3 +173,26 @@ def torque_tracking(
   norm = (term.processed_torque - t.torque_target) / term.effort_limit.clamp(min=1e-3)
   err = torch.square(norm).mean(dim=-1)
   return torch.exp(-err / (sigma * sigma))
+
+
+def joint_vel_limit_l2(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg,
+  dq_max: tuple[float, ...],
+  frac: float = 0.5,
+) -> torch.Tensor:
+  """Penalize joint speed beyond ``frac * dq_max`` per joint, squared.
+
+  MuJoCo does not enforce joint velocity limits, so a torque policy can learn
+  motions no real actuator can execute -- in deployment the commanded speed
+  climbs monotonically into the hardware guardrail. Only the excess over
+  ``frac * dq_max`` is penalized, so ordinary motion inside the envelope is free
+  and the policy is pushed to keep its action distribution hardware-feasible.
+  Pairs with dof damping (which caps terminal speed physically); this term
+  supplies the margin and the gradient toward it.
+  """
+  asset = env.scene[asset_cfg.name]
+  qv = asset.data.joint_vel[:, asset_cfg.joint_ids]
+  dqm = torch.as_tensor(dq_max, device=qv.device, dtype=qv.dtype)
+  excess = (qv.abs() - frac * dqm).clamp(min=0.0)
+  return torch.sum(excess * excess, dim=1)

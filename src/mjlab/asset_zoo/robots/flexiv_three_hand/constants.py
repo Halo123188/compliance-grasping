@@ -22,6 +22,7 @@ Keeping those names identical means the pick-and-place env config is unchanged.
 from pathlib import Path
 
 import mujoco
+import numpy as np
 
 from mjlab.actuator import (
   BuiltinMotorActuatorCfg,
@@ -416,6 +417,60 @@ def get_flexiv_bare_torque_robot_cfg() -> EntityCfg:
     init_state=BARE_HOME_KEYFRAME,
     collisions=(),  # free-space reach; the human wrench is virtual, no contacts
     spec_fn=get_bare_torque_spec,
+    articulation=BARE_TORQUE_ARTICULATION,
+  )
+
+
+# ── Hardware-limited bare arm (sim-to-real velocity fix) ─────────────────────
+# MuJoCo does not enforce joint velocity limits, so a torque policy learns
+# motions no real actuator can execute (the wrist-roll null-space DOF spun to
+# >150 rad/s in sim, tripping the deploy velocity guardrail). Two structural
+# fixes bake the hardware envelope into training:
+#   * dof damping on each arm joint, sized so full torque reaches ~dq_max, not
+#     infinity -- a physically honest torque-speed droop the policy cannot game;
+#   * j7 (wrist roll) is null-space for the EE task, so it is locked: near-zero
+#     torque authority (via the action effort limit below) plus heavy damping.
+# Rizon4S rated max joint speed (rad/s), datasheet order J1..J7:
+FLEXIV_ARM_DQ_MAX: tuple[float, ...] = (2.09, 2.09, 2.44, 2.44, 4.89, 4.89, 4.89)
+
+# Physical dof damping d = effort_limit / dq_max, so sustained full torque
+# reaches the rated speed rather than diverging. j7 gets heavy damping to freeze
+# the (locked) wrist roll.
+_ARM_DAMPING_PHYS: tuple[float, ...] = tuple(
+  e / v for e, v in zip(FLEXIV_ARM_EFFORT_LIMIT[:6], FLEXIV_ARM_DQ_MAX[:6], strict=True)
+) + (60.0,)
+
+# Effort limit with j7 authority zeroed out (locked roll): the policy's j7 output
+# is clamped to ~gravity-comp only; damping holds it at home.
+FLEXIV_ARM_EFFORT_LIMIT_J7LOCK: tuple[float, ...] = FLEXIV_ARM_EFFORT_LIMIT[:6] + (2.0,)
+
+
+def _make_bare_hwlimited_spec_fn(damping_scale: float):
+  """Bare torque spec with dof damping on the arm joints (scaled)."""
+
+  def _spec() -> mujoco.MjSpec:
+    spec = get_bare_torque_spec()
+    damp = {
+      nm: _ARM_DAMPING_PHYS[i] * damping_scale for i, nm in enumerate(_ARM_JOINTS)
+    }
+    for j in spec.joints:
+      nm = j.name.lstrip("/")
+      if nm in damp:
+        # MjSpec stores hinge damping as a 3-vector; index 0 is the DOF.
+        j.damping = np.array([damp[nm], 0.0, 0.0])
+    return spec
+
+  return _spec
+
+
+def get_flexiv_bare_torque_hwlimited_robot_cfg(
+  damping_scale: float = 1.0,
+) -> EntityCfg:
+  """Bare Flexiv arm with hardware-limited dof damping (j7 lock via effort cfg)."""
+  return EntityCfg(
+    init_state=BARE_HOME_KEYFRAME,
+    collisions=(),
+    spec_fn=_make_bare_hwlimited_spec_fn(damping_scale),
     articulation=BARE_TORQUE_ARTICULATION,
   )
 
