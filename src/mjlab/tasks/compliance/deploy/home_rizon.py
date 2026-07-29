@@ -1,12 +1,19 @@
-"""Move a Flexiv Rizon 4S to the compliance policy's HOME pose.
+"""Move a Flexiv Rizon 4S to a compliance policy's HOME pose.
 
 The pendant "home" parks the arm at Flexiv's default posture (joint2 ≈ −40°), but
-the trained Stage-1 compliance policy expects to start at the *sim* HOME
-``Q_DEFAULT = [0, 0, 0, 1.57, 0, 0, 0]`` (rad) — the ``BARE_HOME_KEYFRAME`` the
-task was trained with.  Starting anywhere else feeds the network an
-out-of-distribution ``q_rel``.  This utility drives the arm there via
-``NRT_JOINT_POSITION`` with conservative speed limits, after an explicit
-confirmation.
+each trained policy expects to start at the *sim* home its task reset to, because
+that pose is what ``joint_pos_rel`` is measured against.  Starting anywhere else
+feeds the network an out-of-distribution ``q_rel``.  Pick it with ``--policy``:
+
+  ``reach``     ``[0, 0, 0, 1.57, 0, 0, 0]`` — ``BARE_HOME_KEYFRAME``, used by
+                the Stage-1 reach tasks (impedance ``…-Bare-Full`` and torque
+                ``…-TorqueSmoothBare``).
+  ``tracking``  the retracted top-down pose ``_HOME_ARM_POSE`` in
+                ``compliance_tracking/config/flexiv/env_cfg.py``, used by
+                ``Mjlab-ComplianceTracking-StageA-TorqueBare-Flexiv``.
+
+This utility drives the arm there via ``NRT_JOINT_POSITION`` with conservative
+speed limits, after an explicit confirmation.
 
 RDK v1.9 API (verified against the v1.9 header/example):
     SendJointPosition(positions, velocities, max_vel, max_acc)   # all rad-based
@@ -16,7 +23,7 @@ RDK v1.9 API (verified against the v1.9 header/example):
 Run from the dedicated deploy venv, by file path (imports only flexivrdk):
 
     .venv-deploy/bin/python src/mjlab/tasks/compliance/deploy/home_rizon.py \\
-        --robot-sn Rizon4s-063501
+        --robot-sn Rizon4s-063501 --policy tracking
 
 Keep a hand on the e-stop: this MOVES THE REAL ARM.
 """
@@ -27,8 +34,13 @@ import argparse
 import math
 import time
 
-# Sim HOME (BARE_HOME_KEYFRAME); mirrors deploy_rizon_route_b.Q_DEFAULT.
-Q_HOME = [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0]  # rad
+# Sim home poses, keyed by policy family. These mirror the ``q_default`` entries
+# in deploy_rizon_torque.POLICIES (and deploy_rizon_route_b.Q_DEFAULT for reach).
+HOMES: dict[str, list[float]] = {
+  "reach": [0.0, 0.0, 0.0, 1.5708, 0.0, 0.0, 0.0],
+  "tracking": [-0.225705, 0.003626, 0.507476, 2.438249, 0.002759, 0.864276, -1.290931],
+}
+DEFAULT_POLICY = "reach"
 
 # Conservative joint-motion limits for the homing move.
 MAX_VEL = 0.3  # rad/s per joint
@@ -46,10 +58,28 @@ def _deg(xs: list[float]) -> list[float]:
 def main() -> None:
   ap = argparse.ArgumentParser(description=__doc__)
   ap.add_argument("--robot-sn", required=True)
+  ap.add_argument(
+    "--policy",
+    choices=sorted(HOMES),
+    default=DEFAULT_POLICY,
+    help=f"which policy's sim home to move to (default: {DEFAULT_POLICY})",
+  )
   ap.add_argument("--max-vel", type=float, default=MAX_VEL, help="rad/s per joint")
   ap.add_argument("--max-acc", type=float, default=MAX_ACC, help="rad/s^2 per joint")
+  ap.add_argument(
+    "--max-delta",
+    type=float,
+    default=math.degrees(REFUSE_DELTA),
+    metavar="DEG",
+    help="refuse if any single joint would move more than this (default: "
+    f"{math.degrees(REFUSE_DELTA):.0f} deg). Raise it deliberately — check the "
+    "swept volume and any tool cabling first",
+  )
   ap.add_argument("--yes", action="store_true", help="skip the confirmation prompt")
   args = ap.parse_args()
+
+  q_home = HOMES[args.policy]
+  print(f"Homing to the '{args.policy}' policy's sim home pose.")
 
   import flexivrdk  # noqa: PLC0415  (only needed on the robot)
 
@@ -65,11 +95,11 @@ def main() -> None:
     time.sleep(0.1)
 
   dof = robot.info().DoF
-  if dof != len(Q_HOME):
-    raise SystemExit(f"robot DoF {dof} != len(Q_HOME) {len(Q_HOME)}; edit Q_HOME")
+  if dof != len(q_home):
+    raise SystemExit(f"robot DoF {dof} != len(q_home) {len(q_home)}; edit HOMES")
 
   q0 = list(robot.states().q)[:dof]
-  target = Q_HOME[:dof]
+  target = q_home[:dof]
   deltas = [t - c for t, c in zip(target, q0, strict=False)]
   max_delta = max(abs(d) for d in deltas)
 
@@ -79,10 +109,13 @@ def main() -> None:
   print(f"Largest joint move: {math.degrees(max_delta):.1f} deg")
   print(f"Limits: max_vel={args.max_vel} rad/s, max_acc={args.max_acc} rad/s^2")
 
-  if max_delta > REFUSE_DELTA:
+  worst = max(range(dof), key=lambda i: abs(deltas[i]))
+  if math.degrees(max_delta) > args.max_delta:
     raise SystemExit(
-      f"Refusing: a joint would move {math.degrees(max_delta):.0f} deg "
-      f"(> {math.degrees(REFUSE_DELTA):.0f}). Check the current pose / Q_HOME."
+      f"Refusing: joint{worst + 1} would move {math.degrees(max_delta):.0f} deg "
+      f"(> {args.max_delta:.0f}). Check the current pose / --policy, or raise the "
+      f"limit with --max-delta {math.ceil(math.degrees(max_delta)):d} once you "
+      "have confirmed the path is clear."
     )
 
   if not args.yes:
