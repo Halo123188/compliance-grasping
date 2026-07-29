@@ -99,6 +99,10 @@ K_TRANS_FLOOR: float | None = None
 # The RDK TCP MUST be configured to this point, or ee_pos / goal_error are wrong.
 BARE_TCP_OFFSET_LINK7 = np.array([0.0, 0.0, 0.05], dtype=np.float32)
 
+# The robot rejects force-control modes until ZeroFTSensor has run (event
+# [301004]); this bounds the wait for that primitive (~1-2 s in practice).
+ZERO_FT_TIMEOUT_S = 15.0
+
 DECIMATION = 10  # 100 Hz policy over a nominal 1 kHz inner loop
 POLICY_HZ = 100.0
 POLICY_DT = 1.0 / POLICY_HZ
@@ -313,7 +317,38 @@ class RizonAdapter:
     )
 
   # --- mode / command ------------------------------------------------------
-  def enter_cartesian_mode(self) -> None:
+  def zero_ft_sensor(self) -> None:
+    """Zero the 6-axis F/T sensor — mandatory before any force-control mode.
+
+    Without it ``SwitchMode(NRT_CARTESIAN_MOTION_FORCE)`` raises with event
+    ``[301004]``.  Zeroing takes the current wrench as the bias, so the TCP must
+    be free of contact while it runs.
+    """
+    print("Zeroing the F/T sensor — the TCP must be free of contact...")
+    self.robot.SwitchMode(self.Mode.NRT_PRIMITIVE_EXECUTION)
+    self.robot.ExecutePrimitive("ZeroFTSensor", {})
+    # busy() is NOT a completion signal here: NRT_PRIMITIVE_EXECUTION keeps the
+    # primitive resident, so busy() stays True indefinitely. primitive_states()
+    # ["terminated"] is what flips (~0.5 s in).
+    t0 = time.perf_counter()
+    while True:
+      st = self.robot.primitive_states()
+      if st.get("primitiveName") == "ZeroFTSensor" and st.get("terminated") in (
+        1,
+        1.0,
+        "1",
+        True,
+      ):
+        break
+      if time.perf_counter() - t0 > ZERO_FT_TIMEOUT_S:
+        raise SystemExit(f"ZeroFTSensor did not terminate in {ZERO_FT_TIMEOUT_S:.0f}s.")
+      time.sleep(0.05)
+    self.robot.Stop()  # release the primitive before switching modes
+    print("F/T sensor zeroed.")
+
+  def enter_cartesian_mode(self, zero_ft: bool = True) -> None:
+    if zero_ft:
+      self.zero_ft_sensor()
     # 1.9 has only the NRT Cartesian mode: the robot interpolates toward the
     # last commanded target, which suits a pure-Python ~100 Hz loop.
     self.robot.SwitchMode(self.Mode.NRT_CARTESIAN_MOTION_FORCE)
@@ -403,13 +438,14 @@ def run(
   max_steps: int | None,
   confirm: bool = True,
   smooth: float = 0.0,
+  zero_ft: bool = True,
 ) -> None:
   actor = Actor(ONNX_PATH)
   last_action = np.zeros(ACT_DIM, dtype=np.float32)  # sim reset: raw_action = 0
   filt_cmd: Command | None = None  # EMA state for command smoothing
 
   if adapter is not None:
-    adapter.enter_cartesian_mode()
+    adapter.enter_cartesian_mode(zero_ft=zero_ft)
     st0 = adapter.read_state()
     lock_quat = st0.ee_quat.copy()  # lock orientation at start
     # The arm is about to move under policy control — summarise and confirm.
@@ -484,6 +520,11 @@ def main() -> None:
   )
   ap.add_argument("--yes", action="store_true", help="skip the pre-motion prompt")
   ap.add_argument(
+    "--skip-zero-ft",
+    action="store_true",
+    help="skip the ZeroFTSensor primitive (only if already zeroed this session)",
+  )
+  ap.add_argument(
     "--smooth",
     type=float,
     default=CMD_SMOOTH,
@@ -526,6 +567,7 @@ def main() -> None:
     max_steps=args.steps,
     confirm=not args.yes,
     smooth=args.smooth,
+    zero_ft=not args.skip_zero_ft,
   )
 
 
