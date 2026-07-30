@@ -60,6 +60,16 @@ class ArmTorqueActionCfg(BaseActionCfg):
   linearly, killing the reset-time whip (the GRU/action state comes out of reset
   cold and would otherwise inject a violent first move).  0 disables the ramp."""
 
+  dq_max: tuple[float, ...] = field(default_factory=tuple)
+  """If set, a torque-speed envelope (per joint, ``actuator_names`` order).  The
+  torque available to *drive* a joint faster fades linearly to 0 as ``|qvel|``
+  approaches ``dq_max``, while full torque stays available to *decelerate*.  This
+  caps policy-driven joint speed at ``dq_max`` -- killing the reset whip / the
+  sim-to-real velocity blowup -- WITHOUT adding any resistance to an externally
+  driven motion, so the arm still yields freely when a person pushes it (the
+  crucial difference from physical dof damping, which resists every motion and
+  therefore destroys compliance).  Empty disables the envelope."""
+
   def __post_init__(self):
     self.transmission_type = TransmissionType.JOINT
 
@@ -81,6 +91,8 @@ class ArmTorqueAction(BaseAction):
       f"effort_limit has {len(cfg.effort_limit)} entries, expected {self._num_targets}"
     )
     self._limit = torch.tensor(cfg.effort_limit, device=self.device)  # (J,)
+    # Torque-speed envelope ceiling (per joint), or None to disable.
+    self._dq_max = torch.tensor(cfg.dq_max, device=self.device) if cfg.dq_max else None
     # DOF velocity addresses for indexing qfrc_bias (mirrors the impedance term).
     self._dof_ids = self._entity.indexing.joint_v_adr[self._target_ids]
     self._torque = torch.zeros(self.num_envs, self._num_targets, device=self.device)
@@ -130,6 +142,17 @@ class ArmTorqueAction(BaseAction):
       w = (self._since_reset.float() / self.cfg.warm_start_steps).clamp(max=1.0)
       tau = tau * w.unsqueeze(-1)
       self._since_reset += 1
+    if self._dq_max is not None:
+      # Torque-speed envelope: fade the policy's *driving* torque to 0 as the
+      # joint approaches dq_max, but keep full braking authority.  Caps the speed
+      # the motor can drive to (kills the whip) without resisting an external
+      # push, so compliance survives.  Applied to the residual before gravity
+      # comp, so the gravity-hold term always passes through.
+      dq = self._env.sim.data.qvel[:, self._dof_ids]
+      frac = (1.0 - dq.abs() / self._dq_max).clamp(min=0.0, max=1.0)
+      driving = (tau * dq) > 0.0
+      cap = torch.where(driving, self._limit * frac, self._limit)
+      tau = torch.clamp(tau, -cap, cap)
     if self.cfg.gravity_comp:
       tau = tau + self._env.sim.data.qfrc_bias[:, self._dof_ids]
     tau = torch.clamp(tau, -self._limit, self._limit)

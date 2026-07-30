@@ -107,7 +107,7 @@ def flexiv_tracking_env_cfg(
   bare: bool = False,
   graded_push: bool = False,
   hw_limits: bool = False,
-  damping_scale: float = 1.0,
+  damping_scale: float = 0.0,
   vel_limit_weight: float = -0.01,
 ) -> ManagerBasedRlEnvCfg:
   with_object = stage in ("B", "C")

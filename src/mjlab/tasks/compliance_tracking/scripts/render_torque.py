@@ -173,10 +173,13 @@ def main(
   stiffness: float = 800.0,
   push_dir: tuple[float, float, float] | None = None,
   warm_start_steps: int = 0,
+  admittance_stiffness: float | None = None,
 ) -> None:
   cfg = load_env_cfg(task, play=True)
   if warm_start_steps > 0:
     cfg.actions["arm_torque"].warm_start_steps = warm_start_steps
+  if admittance_stiffness is not None:
+    cfg.commands["teacher"].admittance_stiffness = admittance_stiffness
   cfg.scene.num_envs = 1
   cfg.viewer.width = 720
   cfg.viewer.height = 640

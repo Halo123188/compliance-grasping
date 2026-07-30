@@ -116,6 +116,11 @@ def make_tracking_env_cfg(
         actuator_names=ARM_JOINTS,
         effort_limit=tuple(arm_effort_limit) if arm_effort_limit else (),
         gravity_comp=True,
+        # Torque-speed envelope at the deploy guard (dq_guard_frac * rated): the
+        # motor cannot drive a joint past the guard, so the policy-driven whip is
+        # capped in hardware terms -- but with no damping resistance, so the arm
+        # still yields to a push.  Empty when dq_max is unset (non-hw variants).
+        dq_max=tuple(dq_guard_frac * v for v in dq_max) if dq_max else (),
       )
     }
   else:
