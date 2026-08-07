@@ -1,115 +1,119 @@
 <mujoco model="two_finger_hand">
   <compiler angle="radian" meshdir="meshes" autolimits="true"/>
+  <!--
+    Collision uses the real meshes, matching how the stock UMI gripper is set up
+    (assets/umi_gripper: `<default class="collision"><geom type="mesh" group="3"/>`).
+    MuJoCo collides meshes as their convex hull, and these Onshape exports hull to
+    ~2400 vertices per finger -- 58x the UMI finger's 42 -- which is what
+    overflowed mujoco-warp's fixed EPA polytope and produced NaNs. `maxhullvert`
+    caps the collision hull at UMI-like complexity while keeping the true finger
+    shape: the flat 27x21 mm inner pad and its 4.3 deg slope, both of which the
+    previous capsule/box primitives got wrong (round surface -> line contact, and
+    the jaw read 22 mm narrower than the real fingers when open).
+
+    Mass convention also follows UMI: the visual geoms are density="0" and the
+    collision geoms carry the inertia, so mass is not double-counted (the old
+    XML had both the visual meshes and the primitives contributing).
+  -->
   <asset>
-    <mesh name="base_link" file="base_link.stl"/>
+    <mesh name="base_link" file="base_link.stl" maxhullvert="64"/>
     <mesh name="adapter" file="adapter.stl"/>
     <mesh name="shim" file="shim.stl"/>
     <mesh name="mount24" file="mount24.stl"/>
-    <mesh name="left_1" file="left_1.stl"/>
-    <mesh name="left_2" file="left_2.stl"/>
-    <mesh name="right_1" file="right_1.stl"/>
-    <mesh name="right_2" file="right_2.stl"/>
-    <mesh name="base_link_c0" file="collision/base_link_c0.stl"/>
-    <mesh name="base_link_c1" file="collision/base_link_c1.stl"/>
-    <mesh name="base_link_c2" file="collision/base_link_c2.stl"/>
-    <mesh name="base_link_c3" file="collision/base_link_c3.stl"/>
-    <mesh name="base_link_c4" file="collision/base_link_c4.stl"/>
-    <mesh name="base_link_c5" file="collision/base_link_c5.stl"/>
-    <mesh name="base_link_c6" file="collision/base_link_c6.stl"/>
-    <mesh name="base_link_c7" file="collision/base_link_c7.stl"/>
-    <mesh name="left_1_c0" file="collision/left_1_c0.stl"/>
-    <mesh name="left_1_c1" file="collision/left_1_c1.stl"/>
-    <mesh name="left_1_c2" file="collision/left_1_c2.stl"/>
-    <mesh name="left_1_c3" file="collision/left_1_c3.stl"/>
-    <mesh name="left_1_c4" file="collision/left_1_c4.stl"/>
-    <mesh name="left_1_c5" file="collision/left_1_c5.stl"/>
-    <mesh name="left_1_c6" file="collision/left_1_c6.stl"/>
-    <mesh name="left_1_c7" file="collision/left_1_c7.stl"/>
-    <mesh name="left_2_c0" file="collision/left_2_c0.stl"/>
-    <mesh name="left_2_c1" file="collision/left_2_c1.stl"/>
-    <mesh name="left_2_c2" file="collision/left_2_c2.stl"/>
-    <mesh name="left_2_c3" file="collision/left_2_c3.stl"/>
-    <mesh name="left_2_c4" file="collision/left_2_c4.stl"/>
-    <mesh name="left_2_c5" file="collision/left_2_c5.stl"/>
-    <mesh name="left_2_c6" file="collision/left_2_c6.stl"/>
-    <mesh name="left_2_c7" file="collision/left_2_c7.stl"/>
-    <mesh name="right_1_c0" file="collision/right_1_c0.stl"/>
-    <mesh name="right_1_c1" file="collision/right_1_c1.stl"/>
-    <mesh name="right_1_c2" file="collision/right_1_c2.stl"/>
-    <mesh name="right_1_c3" file="collision/right_1_c3.stl"/>
-    <mesh name="right_1_c4" file="collision/right_1_c4.stl"/>
-    <mesh name="right_1_c5" file="collision/right_1_c5.stl"/>
-    <mesh name="right_1_c6" file="collision/right_1_c6.stl"/>
-    <mesh name="right_1_c7" file="collision/right_1_c7.stl"/>
-    <mesh name="right_2_c0" file="collision/right_2_c0.stl"/>
-    <mesh name="right_2_c1" file="collision/right_2_c1.stl"/>
-    <mesh name="right_2_c2" file="collision/right_2_c2.stl"/>
-    <mesh name="right_2_c3" file="collision/right_2_c3.stl"/>
-    <mesh name="right_2_c4" file="collision/right_2_c4.stl"/>
-    <mesh name="right_2_c5" file="collision/right_2_c5.stl"/>
-    <mesh name="right_2_c6" file="collision/right_2_c6.stl"/>
-    <mesh name="right_2_c7" file="collision/right_2_c7.stl"/>
+    <mesh name="left_1" file="left_1.stl" maxhullvert="48"/>
+    <mesh name="left_2" file="left_2.stl" maxhullvert="48"/>
+    <mesh name="right_1" file="right_1.stl" maxhullvert="48"/>
+    <mesh name="right_2" file="right_2.stl" maxhullvert="48"/>
   </asset>
+  <default>
+    <default class="visual">
+      <geom type="mesh" contype="0" conaffinity="0" group="1" density="0"/>
+    </default>
+    <default class="collision">
+      <geom type="mesh" group="3" rgba="0.9 0.25 0.15 0.6"/>
+    </default>
+  </default>
   <worldbody>
     <body name="base_link">
-      <geom type="mesh" mesh="base_link" rgba="0.80 0.82 0.85 1" contype="0" conaffinity="0" group="1"/>
-      <geom type="mesh" mesh="adapter" rgba="0.60 0.75 0.60 1" contype="0" conaffinity="0" group="1" pos="0.0 0.0113 0.0315" quat="0 1 0 0"/>
-      <geom type="mesh" mesh="shim" rgba="0.72 0.55 0.86 1" contype="0" conaffinity="0" group="1" pos="0.0 0.0113 0.0075" quat="0 0 1 0"/>
-      <geom type="mesh" mesh="mount24" rgba="0.90 0.59 0.24 1" contype="0" conaffinity="0" group="1" pos="-0.035 0.0108 0.0005" quat="1 0 0 0"/>
-      <geom type="mesh" mesh="base_link_c0" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-      <geom type="mesh" mesh="base_link_c1" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-      <geom type="mesh" mesh="base_link_c2" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-      <geom type="mesh" mesh="base_link_c3" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-      <geom type="mesh" mesh="base_link_c4" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-      <geom type="mesh" mesh="base_link_c5" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-      <geom type="mesh" mesh="base_link_c6" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-      <geom type="mesh" mesh="base_link_c7" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+      <geom mesh="base_link" rgba="0.80 0.82 0.85 1" class="visual"/>
+      <geom mesh="adapter" rgba="0.60 0.75 0.60 1" class="visual" pos="0.0 0.0113 0.0315" quat="0 1 0 0"/>
+      <geom mesh="shim" rgba="0.72 0.55 0.86 1" class="visual" pos="0.0 0.0113 0.0075" quat="0 0 1 0"/>
+      <geom mesh="mount24" rgba="0.90 0.59 0.24 1" class="visual" pos="-0.035 0.0108 0.0005" quat="1 0 0 0"/>
+      <geom name="palm_col" mesh="base_link" class="collision"/>
       <body name="left_1" pos="-0.028 -0.0037 -0.024">
-        <joint name="left_1" type="hinge" axis="0 1 0" range="-0.42 0.15" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
-        <geom type="mesh" mesh="left_1" rgba="0.42 0.62 0.90 1" contype="0" conaffinity="0" group="1"/>
-        <geom type="mesh" mesh="left_1_c0" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-        <geom type="mesh" mesh="left_1_c1" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-        <geom type="mesh" mesh="left_1_c2" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-        <geom type="mesh" mesh="left_1_c3" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-        <geom type="mesh" mesh="left_1_c4" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-        <geom type="mesh" mesh="left_1_c5" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-        <geom type="mesh" mesh="left_1_c6" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-        <geom type="mesh" mesh="left_1_c7" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <joint name="left_1" type="hinge" axis="0 1 0" range="-1.6 1.6" armature="0.01" damping="0.2" solreflimit="0.02 1"/>
+        <geom mesh="left_1" rgba="0.42 0.62 0.90 1" class="visual"/>
+        <geom name="left_1_col" mesh="left_1" class="collision"/>
         <body name="left_2" pos="0 0 -0.0445">
-          <joint name="left_2" type="hinge" axis="0 1 0" range="-0.55 0.55" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
-          <geom type="mesh" mesh="left_2" rgba="0.10 0.30 0.70 1" contype="0" conaffinity="0" group="1"/>
-          <geom type="mesh" mesh="left_2_c0" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-          <geom type="mesh" mesh="left_2_c1" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-          <geom type="mesh" mesh="left_2_c2" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-          <geom type="mesh" mesh="left_2_c3" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-          <geom type="mesh" mesh="left_2_c4" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-          <geom type="mesh" mesh="left_2_c5" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-          <geom type="mesh" mesh="left_2_c6" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-          <geom type="mesh" mesh="left_2_c7" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <joint name="left_2" type="hinge" axis="0 1 0" range="-1.6 1.6" armature="0.01" damping="0.2" solreflimit="0.02 1"/>
+          <geom mesh="left_2" rgba="0.10 0.30 0.70 1" class="visual"/>
+          <geom name="left_2_col" mesh="left_2" class="collision"/>
+          <!--
+            A FINGERTIP reference point, chosen deliberately -- read this before
+            treating it as a contact point, because for the 50 mm cube it is not
+            one.
+
+            History, all measured (scripts/diag_pad_site.py, diag_pad_contact.py,
+            diag_finger_profile.py, diag_pad_candidates.py):
+              (9.54, 8.85, -24.42)  centre of the flat inner face. The XML called
+                                    this the gripping face and it is, but the cube
+                                    loads the face's BOTTOM EDGE, 7.1 mm lower.
+              (9.97, 8.85, -31.49)  that bottom edge -- where a 50 mm cube really
+                                    bears, stable to 0.01 mm across distal curls
+                                    -0.20..-0.60, and coincident with the contact
+                                    point to 0.01 mm.
+              (1.33, 18.85, -44.00) HERE. Further toward the tip by choice.
+
+            What changes at -44 mm: the flat pad ENDS at z = -31.5. Below it the
+            finger tapers hard -- inner surface x is +10.0 at -32, +6.9 at -36,
+            +4.2 at -40, +1.3 at -44 -- so x follows the surface rather than
+            staying at the pad's +10.0, or the site would hang in free space in
+            front of the finger. y moves too: the surface at this height spans
+            +10.8..+25.9, and the old +8.85 is outside it. +18.85 is half way
+            from the old y to the far edge.
+
+            CONSEQUENCE, do not lose this. What matters is not the drop in z but
+            the drop in x: the flat gripping face is at x = +10.0, and x = +1.33
+            is 8.6 mm BEHIND it, toward the finger's spine. Both fingers pull
+            back by that much, so the pair sits 17.2 mm wider apart than the two
+            gripping faces do. Measured while actually gripping a 50 mm cube
+            (fingers stopped by the cube at left_1 = +0.234):
+
+              old site (9.97, ., -31.49)  separation 49.9 mm -- ON the cube face
+              this site (1.33, ., -44.00) separation 64.4 mm -- 7.2 mm CLEAR of
+                                          the cube on each side, in mid-air
+
+            So this point can never coincide with a contact. `pad_pinch` pulls
+            both sites at the cube centre and the nearest they can get is 7.2 mm
+            away, with the fingers already hard against the cube -- asking for
+            more only shoves the cube. Run 45608 scored grasp 0.339 against
+            0.468 for the same config on the old site.
+
+            (An earlier version of this note claimed the two tips were 2.7 mm
+            apart and that the cube was therefore out of reach INSIDE them. Both
+            were wrong: 2.7 mm was the difference of two link-frame x
+            coordinates, which is not a distance between the fingers at all, and
+            the sites sit outside the cube, not inside it.)
+
+            Anything comparing this separation against an object width must use
+            a measured value, not 2*CUBE_HALF; see antipodal_pinch in
+            flexiv_two_finger/env_cfgs.py.
+          -->
+          <site name="left_pad" pos="0.00133 0.01885 -0.04400" size="0.004"
+                rgba="0.2 0.5 1.0 0.9"/>
         </body>
       </body>
       <body name="right_1" pos="0.028 -0.0037 -0.024">
-        <joint name="right_1" type="hinge" axis="0 1 0" range="-0.15 0.42" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
-        <geom type="mesh" mesh="right_1" rgba="0.92 0.48 0.48 1" contype="0" conaffinity="0" group="1"/>
-        <geom type="mesh" mesh="right_1_c0" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-        <geom type="mesh" mesh="right_1_c1" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-        <geom type="mesh" mesh="right_1_c2" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-        <geom type="mesh" mesh="right_1_c3" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-        <geom type="mesh" mesh="right_1_c4" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-        <geom type="mesh" mesh="right_1_c5" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-        <geom type="mesh" mesh="right_1_c6" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-        <geom type="mesh" mesh="right_1_c7" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+        <joint name="right_1" type="hinge" axis="0 1 0" range="-1.6 1.6" armature="0.01" damping="0.2" solreflimit="0.02 1"/>
+        <geom mesh="right_1" rgba="0.92 0.48 0.48 1" class="visual"/>
+        <geom name="right_1_col" mesh="right_1" class="collision"/>
         <body name="right_2" pos="0 0 -0.0445">
-          <joint name="right_2" type="hinge" axis="0 1 0" range="-0.55 0.55" armature="0.01" damping="0.2" solreflimit="0.004 1"/>
-          <geom type="mesh" mesh="right_2" rgba="0.62 0.0 0.0 1" contype="0" conaffinity="0" group="1"/>
-          <geom type="mesh" mesh="right_2_c0" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-          <geom type="mesh" mesh="right_2_c1" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-          <geom type="mesh" mesh="right_2_c2" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-          <geom type="mesh" mesh="right_2_c3" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-          <geom type="mesh" mesh="right_2_c4" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-          <geom type="mesh" mesh="right_2_c5" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-          <geom type="mesh" mesh="right_2_c6" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
-          <geom type="mesh" mesh="right_2_c7" group="3" density="1240" rgba="0.5 0.5 0.5 0.4"/>
+          <joint name="right_2" type="hinge" axis="0 1 0" range="-1.6 1.6" armature="0.01" damping="0.2" solreflimit="0.02 1"/>
+          <geom mesh="right_2" rgba="0.62 0.0 0.0 1" class="visual"/>
+          <geom name="right_2_col" mesh="right_2" class="collision"/>
+          <!-- Mirror of left_pad; see the note there. -->
+          <site name="right_pad" pos="-0.00133 0.01885 -0.04400" size="0.004"
+                rgba="1.0 0.3 0.3 0.9"/>
         </body>
       </body>
     </body>
