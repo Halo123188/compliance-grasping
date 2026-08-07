@@ -37,6 +37,13 @@ class TrainConfig:
   wandb_run_path: str | None = None
   wandb_checkpoint_name: str | None = None
   """Optional checkpoint name within the W&B run to load (e.g. 'model_4000.pt')."""
+  teacher_checkpoint: str | None = None
+  """Path to the teacher checkpoint for a distillation run.
+
+  Loads teacher weights only, leaving the student randomly initialised and the
+  iteration counter at zero. The checkpoint may come from a plain PPO run: its
+  ``actor_state_dict`` becomes the teacher. Independent of ``--agent.resume``,
+  which resumes a distillation run (student + optimizer + teacher)."""
   gpu_ids: list[int] | Literal["all"] | None = field(default_factory=lambda: [0])
 
   @staticmethod
@@ -168,6 +175,9 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
 
   add_wandb_tags(cfg.agent.wandb_tags)
   runner.add_git_repo_to_log(__file__)
+  if cfg.teacher_checkpoint is not None:
+    print(f"[INFO]: Loading teacher checkpoint from: {cfg.teacher_checkpoint}")
+    runner.load(cfg.teacher_checkpoint, load_cfg={"teacher": True, "iteration": False})
   if resume_path is not None:
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     runner.load(str(resume_path))

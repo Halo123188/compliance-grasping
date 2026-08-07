@@ -143,3 +143,93 @@ class RslRlOnPolicyRunnerCfg(RslRlBaseRunnerCfg):
   """The critic configuration."""
   algorithm: RslRlPpoAlgorithmCfg = field(default_factory=RslRlPpoAlgorithmCfg)
   """The algorithm configuration."""
+
+
+@dataclass
+class RslRlDistillationAlgorithmCfg:
+  """Config for RSL-RL's DAgger-style distillation algorithm.
+
+  The student acts (so the states visited are its own) and the frozen teacher
+  labels every state it visits; the loss is a regression of the student's mean
+  action onto the teacher's.
+  """
+
+  num_learning_epochs: int = 5
+  """The number of passes over the collected rollout per update."""
+  gradient_length: int = 1
+  """Number of per-timestep batches accumulated before each optimizer step.
+
+  RSL-RL's distillation generator yields one batch per rollout timestep, so an
+  iteration takes ``num_steps_per_env * num_learning_epochs / gradient_length``
+  optimizer steps. This exists to accumulate BPTT chunks for RECURRENT students;
+  for a feedforward student there is nothing to backprop through time, and
+  RSL-RL's default of 15 quietly divides the learning-per-sample by 15 -- enough
+  to leave a CNN student's loss flat for over a thousand iterations. Leave it at
+  1 unless the student is recurrent.
+  """
+  learning_rate: float = 1e-3
+  """The learning rate."""
+  max_grad_norm: float | None = None
+  """The maximum gradient norm. ``None`` disables clipping."""
+  loss_type: Literal["mse", "huber"] = "mse"
+  """The behaviour-cloning loss."""
+  optimizer: Literal["adam", "adamw", "sgd", "rmsprop"] = "adam"
+  """The optimizer to use."""
+  class_name: str = "Distillation"
+  """Algorithm class name resolved by RSL-RL.
+
+  Use ``"mjlab.rl.distillation:DaggerDistillation"`` for the teacher-mixing
+  schedule; the three ``beta_*`` fields below are ignored by the stock class.
+  """
+  beta_start: float = 1.0
+  """DAgger mixing: probability of executing the TEACHER's action at iteration 0."""
+  beta_end: float = 0.0
+  """DAgger mixing: probability at and after ``beta_decay_iters``."""
+  beta_decay_iters: int = 0
+  """DAgger mixing: iterations over which beta decays linearly. 0 disables it.
+
+  Without mixing the student drives from iteration 0, and if it cannot recover
+  from its own early mistakes every later sample is drawn from the same
+  off-task distribution. The labels are the teacher's either way -- mixing
+  changes which states get labelled, not what the label is.
+  """
+
+
+@dataclass
+class RslRlDistillationRunnerCfg(RslRlBaseRunnerCfg):
+  """Config for distilling a privileged teacher into a partially-observing student.
+
+  ``obs_groups`` routes environment observation groups into the two model
+  inputs. The "teacher" set must resolve to exactly the observation the teacher
+  was trained on, in the same order, or its weights are being fed a different
+  vector than they were fitted to.
+  """
+
+  class_name: str = "DistillationRunner"
+  """The runner class name."""
+  obs_groups: dict[str, tuple[str, ...]] = field(
+    default_factory=lambda: {"student": ("student",), "teacher": ("teacher",)},
+  )
+  student: RslRlModelCfg = field(
+    default_factory=lambda: RslRlModelCfg(
+      distribution_cfg={
+        "class_name": "GaussianDistribution",
+        "init_std": 0.1,
+        "std_type": "scalar",
+      }
+    )
+  )
+  """The student configuration.
+
+  The student needs a distribution because DAgger samples its actions to spread
+  the state distribution it labels. Nothing regularizes that std -- the loss is
+  computed on the mean -- so it stays at ``init_std`` for the whole run and is
+  pure injected noise. Keep it small.
+  """
+  teacher: RslRlModelCfg = field(default_factory=RslRlModelCfg)
+  """The teacher configuration. Must match the architecture of the checkpoint
+  it is loaded from, including ``obs_normalization`` and ``distribution_cfg``."""
+  algorithm: RslRlDistillationAlgorithmCfg = field(
+    default_factory=RslRlDistillationAlgorithmCfg
+  )
+  """The algorithm configuration."""

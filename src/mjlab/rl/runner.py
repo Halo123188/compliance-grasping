@@ -3,7 +3,7 @@ from pathlib import Path
 
 import torch
 from rsl_rl.env import VecEnv
-from rsl_rl.runners import OnPolicyRunner
+from rsl_rl.runners import DistillationRunner, OnPolicyRunner
 
 from mjlab.rl.vecenv_wrapper import RslRlVecEnvWrapper
 
@@ -13,6 +13,9 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
 
   env: RslRlVecEnvWrapper
 
+  MODEL_KEYS: tuple[str, ...] = ("actor", "critic")
+  """Keys in ``train_cfg`` that hold a per-model config dict."""
+
   def __init__(
     self,
     env: VecEnv,
@@ -21,7 +24,7 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
     device: str = "cpu",
   ) -> None:
     # Strip None-valued optional configs so MLPModel doesn't receive them.
-    for key in ("actor", "critic"):
+    for key in self.MODEL_KEYS:
       if key in train_cfg:
         for opt in ("cnn_cfg", "distribution_cfg"):
           if train_cfg[key].get(opt) is None:
@@ -139,3 +142,23 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
     if infos and "env_state" in infos:
       self.env.unwrapped.common_step_counter = infos["env_state"]["common_step_counter"]
     return infos
+
+
+class MjlabDistillationRunner(MjlabOnPolicyRunner, DistillationRunner):
+  """DAgger runner: the student acts, a frozen privileged teacher labels.
+
+  Shares MjlabOnPolicyRunner's checkpoint handling (environment state,
+  legacy-format migration, gated W&B upload) and only swaps which config keys
+  hold model definitions. ``learn()`` comes from RSL-RL's DistillationRunner,
+  which refuses to start until teacher weights have actually been loaded.
+
+  Load the teacher with an explicit ``load_cfg``::
+
+    runner.load(teacher_ckpt, load_cfg={"teacher": True, "iteration": False})
+
+  RSL-RL's ``Distillation.load`` reads the teacher's weights out of a PPO
+  checkpoint's ``actor_state_dict`` when no ``teacher_state_dict`` is present,
+  so a plain PPO run is a valid teacher.
+  """
+
+  MODEL_KEYS = ("student", "teacher")
