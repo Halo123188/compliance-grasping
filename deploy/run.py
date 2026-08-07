@@ -57,13 +57,12 @@ def main() -> int:
     help="refuse to start if any arm joint is further than this (rad) from home",
   )
   ap.add_argument(
-    "--max-jump",
+    "--max-action",
     type=float,
-    default=0.6,
+    default=calib.MAX_ABS_ACTION,
     help=(
-      "abort if a commanded target is further than this (rad) from the measured "
-      "joint. The trained action reach is ~1.5 sigma of a 0.40 rad scale for the "
-      "arm, so a legitimate one-step command stays well inside this."
+      "abort if any raw network output exceeds this. Trained actions run to "
+      "about |5|; the out-of-distribution blow-up this catches was |600|."
     ),
   )
   args = ap.parse_args()
@@ -127,13 +126,20 @@ def main() -> int:
       # of sigma out. The output is an ABSOLUTE joint target that goes straight
       # to the arm, so any input glitch -- a dropped camera frame, a stale
       # encoder read, a units mistake -- is a full-speed command into the bench.
-      jump = np.abs(target - joint_pos)
-      if jump.max() > args.max_jump:
-        j = int(jump.argmax())
+      #
+      # Judged on the RAW ACTION, not on target-minus-measured. A position servo
+      # legitimately lags its target while reaching, so that distance measures
+      # intent and aborting on it kills healthy runs -- which is exactly what the
+      # first version of this guard did against a stationary test arm.
+      # policy.act() separately clamps the target to calib.JOINT_LIMITS, so an
+      # action that is merely large still cannot command past a hard stop.
+      worst = float(np.abs(policy.last_action).max())
+      if worst > args.max_action:
+        j = int(np.abs(policy.last_action).argmax())
         print(
-          f"!! step {i}: target for {calib.JOINT_NAMES[j]} is {jump[j]:.2f} rad from "
-          f"measured ({target[j]:+.2f} vs {joint_pos[j]:+.2f}), over --max-jump "
-          f"{args.max_jump}. Refusing to command it; check the observation."
+          f"!! step {i}: raw action for {calib.JOINT_NAMES[j]} is {worst:.1f}, over "
+          f"--max-action {args.max_action}. Trained actions run to about |5|, so "
+          "this is an out-of-distribution observation, not a big reach. Stopping."
         )
         break
 

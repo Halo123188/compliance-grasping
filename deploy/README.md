@@ -113,11 +113,18 @@ expect the real grip to be the weaker of the two.
 ## Failure modes that do not raise
 
 - **An out-of-distribution observation multiplies the output.** The normalizer
-  is baked into the ONNX. Measured on this checkpoint: `goal_height = 0.0`
-  instead of a value in [0.50, 0.60] takes `max|target|` from 2.6 rad to
-  **668 rad** — because that term's training std is ~0.029, so an out-of-range
-  value lands tens of sigma out. The output is an absolute joint target that
-  goes straight to the arm. `run.py --max-jump` is the guard; do not remove it.
+  is baked into the ONNX, so a bad input does not degrade the output gracefully.
+  Measured: `goal_height = 0.0` instead of a value in [0.50, 0.60] takes the raw
+  action from `|0.95|` to **`|3641|`**, because that term's training std is
+  ~0.029 so an out-of-range value lands tens of sigma out. The output is an
+  absolute joint target that goes straight to the arm.
+
+  Two guards, both load-bearing. `policy.act()` clamps every target to
+  `calib.JOINT_LIMITS`, which turns that blow-up into a saturated but legal
+  command. `run.py --max-action` then stops the loop, judging the **raw action**
+  rather than how far the target sits from the measured angle — a position servo
+  legitimately lags while reaching, so that distance measures intent, not
+  malfunction, and an earlier version of this guard aborted healthy runs on it.
 - **`GripperLink`'s port auto-detect is macOS-only** (`/dev/cu.usbmodem*`). On
   Linux the Teensy is `/dev/ttyACM0` and auto-detect fails with "no Teensy
   serial port found" while the board is plugged in. Pass `--gripper-port`.

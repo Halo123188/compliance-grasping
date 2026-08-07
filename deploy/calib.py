@@ -73,6 +73,31 @@ ACTION_SCALE: tuple[float, ...] = (
   0.35,
 )
 
+# Joint ranges off the compiled model, in JOINT_NAMES order. The trained
+# pipeline never clips -- soft_joint_pos_limit_factor shapes a reward, it does
+# not bound the command -- so on hardware these are the last line between a
+# blown-up action and the arm's own hard stop.
+JOINT_LIMITS: tuple[tuple[float, float], ...] = (
+  (-2.8798, +2.8798),  # joint1
+  (-2.3562, +2.3562),  # joint2
+  (-3.0543, +3.0543),  # joint3
+  (-1.9548, +2.7751),  # joint4
+  (-3.0543, +3.0543),  # joint5
+  (-1.4835, +4.6251),  # joint6
+  (-3.0543, +3.0543),  # joint7
+  (-1.6000, +1.6000),  # left_1
+  (-1.6000, +1.6000),  # left_2
+  (-1.6000, +1.6000),  # right_1
+  (-1.6000, +1.6000),  # right_2
+)
+
+# Abort threshold on the RAW network output, not on the target. Trained actions
+# run to about |5|; the out-of-distribution blow-up this catches was |600|. It
+# has to be the raw action rather than "how far the target is from the measured
+# angle", because a position servo legitimately lags its target during a reach
+# and that distance is a measure of intent, not of malfunction.
+MAX_ABS_ACTION = 15.0
+
 # Sim timestep 5 ms x decimation 4. The gripper firmware runs its own 200 Hz
 # loop underneath and the binary protocol drops torque after 500 ms of silence,
 # so 50 Hz sits comfortably inside both.

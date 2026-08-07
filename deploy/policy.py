@@ -38,6 +38,8 @@ class StudentPolicy:
     self._check_metadata(onnx_path)
     self.default = np.asarray(calib.DEFAULT_JOINT_POS, dtype=np.float32)
     self.scale = np.asarray(calib.ACTION_SCALE, dtype=np.float32)
+    limits = np.asarray(calib.JOINT_LIMITS, dtype=np.float32)
+    self.lo, self.hi = limits[:, 0], limits[:, 1]
     self.last_action = np.zeros(11, dtype=np.float32)
 
   def _check_metadata(self, onnx_path: str | Path) -> None:
@@ -114,7 +116,8 @@ class StudentPolicy:
       },
     )[0].reshape(11)
     self.last_action = action.astype(np.float32)
-    return self.default + self.scale * self.last_action
+    target = self.default + self.scale * self.last_action
+    return np.clip(target, self.lo, self.hi)
 
   def step(
     self,
