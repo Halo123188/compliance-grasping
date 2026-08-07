@@ -41,7 +41,14 @@ class LiftingCommand(CommandTerm):
     object_pos_w = self.object.data.root_link_pos_w
     object_height = object_pos_w[:, 2]
     position_error = torch.norm(self.target_pos - object_pos_w, dim=-1)
-    at_goal = (position_error < self.cfg.success_threshold).float()
+    if self.cfg.success_mode == "lift_height":
+      # Same criterion as the `cube_lifted` termination, so "the episode ended
+      # in success" and "the metric latched" cannot disagree.
+      at_goal = (
+        object_height > (self.cfg.success_table_z + self.cfg.success_height)
+      ).float()
+    else:
+      at_goal = (position_error < self.cfg.success_threshold).float()
 
     # Latch episode_success to 1 once goal is reached.
     self.episode_success = torch.maximum(self.episode_success, at_goal)
@@ -61,27 +68,32 @@ class LiftingCommand(CommandTerm):
     # Reset episode success for resampled envs.
     self.episode_success[env_ids] = 0.0
 
-    # Set target position based on difficulty mode.
+    # Set target position based on difficulty mode. "above_object" is deferred
+    # until after the object is respawned below, since it depends on where the
+    # object landed.
     if self.cfg.difficulty == "fixed":
       target_pos = torch.tensor(
         [0.4, 0.0, 0.3], device=self.device, dtype=torch.float32
       ).expand(n, 3)
       self.target_pos[env_ids] = target_pos + self._env.scene.env_origins[env_ids]
-    else:
-      assert self.cfg.difficulty == "dynamic"
+    elif self.cfg.difficulty == "dynamic":
       r = self.cfg.target_position_range
       lower = torch.tensor([r.x[0], r.y[0], r.z[0]], device=self.device)
       upper = torch.tensor([r.x[1], r.y[1], r.z[1]], device=self.device)
       target_pos = sample_uniform(lower, upper, (n, 3), device=self.device)
       self.target_pos[env_ids] = target_pos + self._env.scene.env_origins[env_ids]
+    else:
+      assert self.cfg.difficulty == "above_object"
 
     # Reset object to new position.
+    object_pos_w = None
     if self.cfg.object_pose_range is not None:
       r = self.cfg.object_pose_range
       lower = torch.tensor([r.x[0], r.y[0], r.z[0]], device=self.device)
       upper = torch.tensor([r.x[1], r.y[1], r.z[1]], device=self.device)
       pos = sample_uniform(lower, upper, (n, 3), device=self.device)
       pos = pos + self._env.scene.env_origins[env_ids]
+      object_pos_w = pos
 
       # Sample orientation (yaw only, keep upright).
       yaw = sample_uniform(r.yaw[0], r.yaw[1], (n,), device=self.device)
@@ -96,6 +108,24 @@ class LiftingCommand(CommandTerm):
 
       self.object.write_root_link_pose_to_sim(pose, env_ids=env_ids)
       self.object.write_root_link_velocity_to_sim(velocity, env_ids=env_ids)
+
+    if self.cfg.difficulty == "above_object":
+      # Goal sits directly over wherever the object spawned, so the position
+      # error is purely the lift height. With an x/y goal sampled independently
+      # of the object (the "dynamic" mode) a perfect vertical lift still leaves
+      # the whole horizontal offset in the error, which both dilutes the lift
+      # gradient and puts the tight-kernel `bring_object_reward` out of reach --
+      # even though the success criterion (`cube_lifted`) only measures height.
+      # Uses the freshly sampled spawn position rather than reading the entity
+      # back, so it does not depend on when the write reaches the sim buffers.
+      assert object_pos_w is not None, (
+        "difficulty='above_object' requires object_pose_range"
+      )
+      r = self.cfg.target_position_range
+      lift_z = sample_uniform(r.z[0], r.z[1], (n,), device=self.device)
+      target = object_pos_w.clone()
+      target[:, 2] = lift_z + self._env.scene.env_origins[env_ids][:, 2]
+      self.target_pos[env_ids] = target
 
   def _update_command(self) -> None:
     pass
@@ -278,7 +308,30 @@ class MultiCubeLiftingCommandCfg(CommandTermCfg):
 class LiftingCommandCfg(CommandTermCfg):
   entity_name: str
   success_threshold: float = 0.05
-  difficulty: Literal["fixed", "dynamic"] = "fixed"
+  success_mode: Literal["goal_distance", "lift_height"] = "goal_distance"
+  """What ``at_goal`` / ``episode_success`` measure.
+
+  ``"goal_distance"``: 3D distance to the commanded goal < ``success_threshold``.
+
+  ``"lift_height"``: the object reached ``success_height`` above
+  ``success_table_z``, which is the criterion the ``cube_lifted`` TERMINATION
+  uses. Set this whenever that termination is active, or the two disagree and
+  the metric loses: ``cube_lifted`` ends the episode as soon as the object is
+  ``success_height`` up, but the goal is sampled higher than that, so the object
+  never gets within ``success_threshold`` of it and the metric cannot latch.
+  Measured on the two-finger grasp, where the goal is sampled in [10, 20] cm and
+  the bar is 10 cm: identical policy, 98.6% lifted either way, but the metric
+  reads 84.0% when the goal was drawn below 15 cm and 24.5% when above -- i.e.
+  it was reporting the goal draw, not the policy.
+  """
+  success_height: float = 0.10
+  """Height above ``success_table_z`` counted as success in ``"lift_height"`` mode."""
+  success_table_z: float = 0.0
+  """Reference height for ``success_height``."""
+  # "fixed": one hard-coded goal. "dynamic": goal sampled independently of the
+  # object. "above_object": goal directly over the object's spawn, so the
+  # position error is purely the lift height (see _resample_command).
+  difficulty: Literal["fixed", "dynamic", "above_object"] = "fixed"
 
   @dataclass
   class TargetPositionRangeCfg:
