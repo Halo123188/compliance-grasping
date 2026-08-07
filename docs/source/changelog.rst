@@ -21,6 +21,63 @@ Added
 - Added material domain randomization functions for MuJoCo Warp RGB rendering:
   ``dr.mat_emission``, ``dr.mat_specular``, ``dr.mat_shininess``, and
   ``dr.mat_texrepeat``.
+- Added teacher-student distillation (DAgger) support: ``RslRlDistillationRunnerCfg``,
+  ``RslRlDistillationAlgorithmCfg`` and ``MjlabDistillationRunner``, wired to
+  RSL-RL's ``Distillation`` algorithm. ``train.py`` gained ``--teacher-checkpoint``,
+  which loads teacher weights from any checkpoint (including a plain PPO run's
+  ``actor_state_dict``) while leaving the student freshly initialized.
+- Added ``Mjlab-Grasp-TwoFinger-Flexiv-Distill-{Depth,Rgb,Rgbd}``: the two-finger
+  grasp env exposing the state teacher's observation and a camera-plus-proprio
+  student observation side by side, for distilling the state policy into a
+  camera-only one.
+- Added the ``goal_height`` manipulation observation, the commanded lift height
+  measured from the environment origin. Unlike ``object_to_goal_distance`` it
+  carries no object pose, so a policy without privileged state can still be told
+  how high to lift.
+- ``RslRlDistillationAlgorithmCfg`` defaults to ``gradient_length=1`` and
+  ``num_learning_epochs=5`` rather than RSL-RL's ``15`` and ``1``. The
+  distillation generator yields one batch per rollout timestep and steps the
+  optimizer only every ``gradient_length`` batches, so the stock value divides
+  the learning per collected sample by 15 -- enough to leave a CNN student's
+  behaviour loss flat for over a thousand iterations. ``gradient_length`` is for
+  accumulating BPTT chunks and should stay at 1 unless the student is recurrent.
+- ``manipulation_mdp.camera_depth`` gained ``range_noise``, ``dropout_prob``,
+  ``patch_prob``, ``patch_size`` and ``scale_err``, modelling the ways a real
+  depth stream differs from a rendered one. They are parameters rather than a
+  cfg-level ``noise`` term because ordering matters: dropout must be applied
+  after the range noise so an invalid pixel reads exactly ``0.0``, which is what
+  a D435 writes. ``patch_prob`` drops correlated ``patch_size`` blocks -- the
+  failure a median filter cannot remove, unlike i.i.d. dropout. All default to
+  zero, i.e. the previous behaviour.
+- Added ``Mjlab-Grasp-TwoFingerWide-Flexiv-Success-Dr`` and
+  ``-Distill-Depth-Success-Dr``, domain-randomized arms of the wide-claw grasp
+  and distillation tasks. Physics randomization (object mass and friction, hand
+  link inertia, arm and finger servo gains separately, joint friction and
+  damping, encoder bias, bench height, start pose) is shared by both, because
+  the teacher labels the student's rollouts and must have trained under the same
+  dynamics. Perception randomization (camera position, orientation and field of
+  view, plus depth noise and dropout) is added only to the distillation task,
+  since the state teacher cannot observe any of it. See
+  ``config/flexiv_two_finger_wide/dr_cfg.py`` for the provenance of every range
+  and ``scripts/wide_dr_check.py`` for the gate that verifies each one actually
+  moves its field.
+- Added ``deploy/``, the real-robot runtime for the camera-only grasp student:
+  the exported ONNX, the 34-d observation, the D435 depth recipe, and the
+  two-finger XC330 gripper over its binary policy protocol. It needs numpy,
+  onnxruntime and pyserial, not mjlab or mujoco, so the robot host runs the
+  weights the cluster evaluated with none of the simulator on it. The
+  sim-radians-to-encoder-counts map is the one thing neither repo records, so it
+  is left unset and ``deploy/calibrate_hand.py`` measures it.
+- Added ``scripts/wide_dr_ablate.py``, which re-scores one trained checkpoint
+  under progressively narrower DR envs to attribute a score drop to a specific
+  randomization rather than to "perception DR" as a lump. The switches it flips
+  (``CG_WIDE_CAM_DR``, ``CG_WIDE_CAM_POS_DR``, ``CG_WIDE_CAM_ROT_DR``,
+  ``CG_WIDE_CAM_POS_AXES``, ``CG_WIDE_CAM_YAW_DEG``, ``CG_WIDE_DEPTH_DR``) are
+  read at build time, so an existing checkpoint needs no retraining.
+- Added ``scripts/wide_onnx_parity.py``, which drives the env with the torch
+  student while feeding the same observation through onnxruntime, so "the ONNX
+  is the evaluated policy" is checked rather than assumed. It also checks that
+  ``deploy/`` reassembles the student observation bit for bit.
 
 Changed
 ^^^^^^^
