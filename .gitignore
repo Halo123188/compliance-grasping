@@ -18,3 +18,17 @@ benchmark_results/
 # Documentation outputs.
 **/_build/*
 **/generated/*
+
+# Standalone MuJoCo scene bundles (regenerate with scripts/export_scene.py)
+exports/
+
+# Rendered diagnostics, rollouts and scene previews. All regenerable from
+# scripts/render_*.py and scripts/export_scene.py; none of it is input.
+viz/
+scenes/**/*.png
+assets/**/preview/
+
+# One-off cluster probes left in the tree by a debugging session.
+slurm-*.out
+/joint7_vel*
+/_joint7_vel.py
