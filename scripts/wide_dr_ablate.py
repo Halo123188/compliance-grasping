@@ -29,7 +29,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-TASK = "Mjlab-Grasp-TwoFingerWide-Flexiv-Distill-Depth-Success-Dr"
+# Overridable because the -Fine arm is a different NETWORK, not just a different
+# schedule: scoring a fine_cnn checkpoint against the base task builds the wrong
+# encoder. `strict=True` in the loader catches it, but only after paying for the
+# env build, so pass the task the checkpoint was trained under.
+TASK = os.environ.get("CG_WIDE_ABLATE_TASK") or (
+  "Mjlab-Grasp-TwoFingerWide-Flexiv-Distill-Depth-Success-Dr"
+)
 
 # (label, env overrides). The baseline repeats the training env so the table is
 # self-contained and so a mismatch against the previously reported number shows
