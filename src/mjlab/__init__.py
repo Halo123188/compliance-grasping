@@ -37,6 +37,34 @@ def _configure_warp() -> None:
   """Configure Warp globally for mjlab."""
   wp.config.enable_backward = False
 
+  # NVRTC precompiled headers OFF. They are a large blob NVRTC maps into its own
+  # arena, and on a big enough scene that mapping FAILS -- the compile then dies
+  # with
+  #
+  #     NVRTC compilation error 6: NVRTC_ERROR_COMPILATION
+  #     Catastrophic error: unable to obtain mapped memory
+  #
+  # which names neither the scene nor the header cache, and is not fixed by
+  # giving the job more memory (measured: it fails at 2.1 GB RSS with 96 GB
+  # requested). It presents as "this environment cannot be built at all" on the
+  # first kernel that happens to be large.
+  #
+  # Bisected on 2026-08-06 while bringing up the wide-claw scene, which hit it on
+  # three separate kernels (`primitive_narrowphase`,
+  # `update_gradient_JTDAJ_dense_tiled`, `render.__locals__._render_megakernel`).
+  # Every scene-side workaround failed: dropping geom groups until only meshes
+  # were renderable, shrinking the camera to 80x60, disabling textures, cutting
+  # njmax. Turning PCH off fixes all three, and it is the only thing that does --
+  # note that `max_unroll = 1` does NOT help and re-breaks it when combined.
+  #
+  # The cost is compile time only, and only on a cache miss. Set
+  # MJLAB_WARP_PCH=1 to restore the default if a future warp fixes the arena.
+  wp.config.use_precompiled_headers = os.environ.get("MJLAB_WARP_PCH", "0").lower() in (
+    "1",
+    "true",
+    "yes",
+  )
+
   # Keep warp verbose by default to show kernel compilation progress.
   # Override with MJLAB_WARP_QUIET=1 environment variable if needed.
   quiet = os.environ.get("MJLAB_WARP_QUIET", "0").lower() in ("1", "true", "yes")
