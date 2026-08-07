@@ -463,6 +463,16 @@ class ManagerBasedRlEnv:
     self.sim.sense()
     self.obs_buf = self.observation_manager.compute(update_history=True)
 
+    # Safety net for rare mujoco-warp contact blow-ups. An env flagged by a
+    # non-finite-state termination has had its state reset above and its obs
+    # recomputed from finite state, but its reward was computed pre-reset and is
+    # still NaN. Scrub that residual on *just those reset envs* so one unlucky
+    # env resets cleanly instead of aborting the whole run via rsl_rl's NaN
+    # check. Non-reset envs are untouched, so a genuine persistent NaN elsewhere
+    # still surfaces as an error.
+    if len(reset_env_ids) > 0:
+      self.reward_buf[reset_env_ids] = torch.nan_to_num(self.reward_buf[reset_env_ids])
+
     if self.cfg.auto_reset and len(reset_env_ids) > 0:
       self.recorder_manager.record_post_reset(reset_env_ids)
     elif len(reset_env_ids) > 0:
