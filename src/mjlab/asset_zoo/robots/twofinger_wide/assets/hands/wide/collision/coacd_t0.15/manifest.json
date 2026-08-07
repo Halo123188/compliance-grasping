@@ -1,0 +1,82 @@
+{
+  "base_link": {
+    "threshold": 0.15,
+    "n_hulls": 3,
+    "files": [
+      "base_link/base_link_000.obj",
+      "base_link/base_link_001.obj",
+      "base_link/base_link_002.obj"
+    ]
+  },
+  "adapter": {
+    "threshold": 0.3,
+    "n_hulls": 4,
+    "files": [
+      "adapter/adapter_000.obj",
+      "adapter/adapter_001.obj",
+      "adapter/adapter_002.obj",
+      "adapter/adapter_003.obj"
+    ]
+  },
+  "shim": {
+    "threshold": 0.15,
+    "n_hulls": 6,
+    "files": [
+      "shim/shim_000.obj",
+      "shim/shim_001.obj",
+      "shim/shim_002.obj",
+      "shim/shim_003.obj",
+      "shim/shim_004.obj",
+      "shim/shim_005.obj"
+    ]
+  },
+  "left_1": {
+    "threshold": 0.15,
+    "n_hulls": 9,
+    "files": [
+      "left_1/left_1_000.obj",
+      "left_1/left_1_001.obj",
+      "left_1/left_1_002.obj",
+      "left_1/left_1_003.obj",
+      "left_1/left_1_004.obj",
+      "left_1/left_1_005.obj",
+      "left_1/left_1_006.obj",
+      "left_1/left_1_007.obj",
+      "left_1/left_1_008.obj"
+    ]
+  },
+  "left_2": {
+    "threshold": 0.15,
+    "n_hulls": 5,
+    "files": [
+      "left_2/left_2_000.obj",
+      "left_2/left_2_001.obj",
+      "left_2/left_2_002.obj",
+      "left_2/left_2_003.obj",
+      "left_2/left_2_004.obj"
+    ]
+  },
+  "right_1": {
+    "threshold": 0.15,
+    "n_hulls": 5,
+    "files": [
+      "right_1/right_1_000.obj",
+      "right_1/right_1_001.obj",
+      "right_1/right_1_002.obj",
+      "right_1/right_1_003.obj",
+      "right_1/right_1_004.obj"
+    ]
+  },
+  "right_2": {
+    "threshold": 0.15,
+    "n_hulls": 6,
+    "files": [
+      "right_2/right_2_000.obj",
+      "right_2/right_2_001.obj",
+      "right_2/right_2_002.obj",
+      "right_2/right_2_003.obj",
+      "right_2/right_2_004.obj",
+      "right_2/right_2_005.obj"
+    ]
+  }
+}

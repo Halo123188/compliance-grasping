@@ -1,0 +1,58 @@
+{
+  "base_link": {
+    "threshold": 0.4,
+    "n_hulls": 3,
+    "files": [
+      "base_link/base_link_000.obj",
+      "base_link/base_link_001.obj",
+      "base_link/base_link_002.obj"
+    ]
+  },
+  "adapter": {
+    "threshold": 0.4,
+    "n_hulls": 1,
+    "files": [
+      "adapter/adapter_000.obj"
+    ]
+  },
+  "shim": {
+    "threshold": 0.4,
+    "n_hulls": 1,
+    "files": [
+      "shim/shim_000.obj"
+    ]
+  },
+  "left_1": {
+    "threshold": 0.4,
+    "n_hulls": 2,
+    "files": [
+      "left_1/left_1_000.obj",
+      "left_1/left_1_001.obj"
+    ]
+  },
+  "left_2": {
+    "threshold": 0.4,
+    "n_hulls": 3,
+    "files": [
+      "left_2/left_2_000.obj",
+      "left_2/left_2_001.obj",
+      "left_2/left_2_002.obj"
+    ]
+  },
+  "right_1": {
+    "threshold": 0.4,
+    "n_hulls": 2,
+    "files": [
+      "right_1/right_1_000.obj",
+      "right_1/right_1_001.obj"
+    ]
+  },
+  "right_2": {
+    "threshold": 0.4,
+    "n_hulls": 2,
+    "files": [
+      "right_2/right_2_000.obj",
+      "right_2/right_2_001.obj"
+    ]
+  }
+}

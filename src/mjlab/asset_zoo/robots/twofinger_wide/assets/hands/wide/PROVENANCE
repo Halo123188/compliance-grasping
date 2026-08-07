@@ -1,0 +1,9 @@
+source:   https://github.com/alokthakrar/robot-actuator-model
+repo-head: d7dd8ab9c150a86e1d26d34baeaae9525cced4c3   # state vendored from
+hand-commit: 03bb868391c3fcccb80c6038a013aaa2b436d9e1
+  subject: Remove the hardware that was fastened to the deleted servo horns
+  date:    2026-08-03T21:52:33-07:00
+files:    urdf/two_finger_hand_wide.urdf, urdf/meshes/wide/*.stl, urdf/meshes/{adapter,shim}.stl
+
+hand-commit is the last commit that TOUCHED the gripper, which is what
+matters here; repo-head is only where the checkout happened to sit.

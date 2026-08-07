@@ -1,0 +1,1043 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="two_finger_hand_wide">
+  <mujoco>
+    <compiler meshdir="meshes" balanceinertia="true" discardvisual="false" />
+  </mujoco>
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/wide/base_link.stl" />
+      </geometry>
+      <material name="base_link_mat">
+        <color rgba="0.80 0.82 0.85 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_000.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_001.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_002.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_003.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_004.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_005.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_006.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_007.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_008.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_009.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_010.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_011.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_012.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_013.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_014.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_015.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_016.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_017.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_018.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_019.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_base_link/wide_base_link_020.obj" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.000060741 -0.000103654 -0.021629981" />
+      <mass value="0.066067962" />
+      <inertia ixx="1.50948611684e-05" ixy="5.034142399e-08" ixz="2.74948191608e-08" iyy="8.33649627315e-05" iyz="6.28120188374e-08" izz="7.82870960285e-05" />
+    </inertial>
+  </link>
+  <link name="adapter">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/adapter.stl" />
+      </geometry>
+      <material name="adapter_mat">
+        <color rgba="0.60 0.75 0.60 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_000.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_001.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_002.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_003.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_004.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_005.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_006.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_007.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_008.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_009.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_010.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_011.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_012.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_013.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_014.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/adapter/adapter_015.obj" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.000048811 0.000048811 0.009851235" />
+      <mass value="0.046275303" />
+      <inertia ixx="2.43212066382e-05" ixy="-3.85832798473e-08" ixz="9.38683115192e-09" iyy="2.44812973493e-05" iyz="9.38683115192e-09" izz="4.31258729585e-05" />
+    </inertial>
+  </link>
+  <joint name="adapter_fixed" type="fixed">
+    <parent link="base_link" />
+    <child link="adapter" />
+    <origin xyz="0.000000 0.000000 0.024000" rpy="3.141593 0.000000 0.000000" />
+  </joint>
+  <link name="shim">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/shim.stl" />
+      </geometry>
+      <material name="shim_mat">
+        <color rgba="0.72 0.55 0.86 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/shim/shim_000.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/shim/shim_001.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/shim/shim_002.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/shim/shim_003.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/shim/shim_004.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/shim/shim_005.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/shim/shim_006.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/shim/shim_007.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/shim/shim_008.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/shim/shim_009.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/shim/shim_010.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/shim/shim_011.obj" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.000000000 0.000000000 -0.006005381" />
+      <mass value="0.009778429" />
+      <inertia ixx="1.61285256295e-06" ixy="3.5527136788e-24" ixz="7.1054273576e-24" iyy="2.35575750632e-06" iyz="1.66533453694e-24" izz="3.53580884226e-06" />
+    </inertial>
+  </link>
+  <joint name="shim_fixed" type="fixed">
+    <parent link="base_link" />
+    <child link="shim" />
+    <origin xyz="0.000000 0.000000 0.000000" rpy="0.000000 3.141593 0.000000" />
+  </joint>
+  <link name="left_1">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/wide/left_1.stl" />
+      </geometry>
+      <material name="left_1_mat">
+        <color rgba="0.42 0.62 0.90 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_000.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_001.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_002.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_003.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_004.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_005.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_006.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_007.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_008.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_009.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_010.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_011.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_012.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_013.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_014.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_015.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_016.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_017.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_018.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_019.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_020.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_021.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_022.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_023.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_024.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_025.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_026.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_027.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_028.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_029.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_030.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_1/wide_left_1_031.obj" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.000375242 0.014423788 -0.029829225" />
+      <mass value="0.032076838" />
+      <inertia ixx="1.18168348181e-05" ixy="-2.64067133002e-07" ixz="-4.87436904977e-07" iyy="1.00314313666e-05" iyz="-7.09972796458e-07" izz="3.91648492252e-06" />
+    </inertial>
+  </link>
+  <joint name="left_1" type="revolute">
+    <parent link="base_link" />
+    <child link="left_1" />
+    <origin xyz="-0.035000 -0.014500 -0.034500" rpy="0.000000 0.000000 0.000000" />
+    <axis xyz="0 1 0" />
+    <limit lower="-1.6" upper="1.6" effort="2" velocity="3" />
+  </joint>
+  <link name="left_2">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/wide/left_2.stl" />
+      </geometry>
+      <material name="left_2_mat">
+        <color rgba="0.10 0.30 0.70 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_000.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_001.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_002.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_003.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_004.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_005.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_006.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_007.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_008.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_009.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_010.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_011.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_012.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_013.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_014.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_015.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_016.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_left_2/wide_left_2_017.obj" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="0.000691561 0.014879375 -0.015567051" />
+      <mass value="0.011583283" />
+      <inertia ixx="5.5816220587e-06" ixy="-2.71404013921e-07" ixz="-4.8034783582e-07" iyy="4.08980507152e-06" iyz="-6.88678828074e-07" izz="2.32100635805e-06" />
+    </inertial>
+  </link>
+  <joint name="left_2" type="revolute">
+    <parent link="left_1" />
+    <child link="left_2" />
+    <origin xyz="0.000000 0.000000 -0.044500" rpy="0.000000 0.000000 0.000000" />
+    <axis xyz="0 1 0" />
+    <limit lower="-1.6" upper="1.6" effort="2" velocity="3" />
+  </joint>
+  <link name="right_1">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/wide/right_1.stl" />
+      </geometry>
+      <material name="right_1_mat">
+        <color rgba="0.92 0.48 0.48 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_000.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_001.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_002.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_003.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_004.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_005.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_006.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_007.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_008.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_009.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_010.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_011.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_012.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_013.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_014.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_015.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_016.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_017.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_018.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_019.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_020.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_021.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_022.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_023.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_024.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_025.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_026.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_027.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_028.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_029.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_1/wide_right_1_030.obj" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.000375242 0.014423788 -0.029829225" />
+      <mass value="0.032076838" />
+      <inertia ixx="1.18168348181e-05" ixy="2.64067133002e-07" ixz="4.87436904977e-07" iyy="1.00314313666e-05" iyz="-7.09972796458e-07" izz="3.91648492252e-06" />
+    </inertial>
+  </link>
+  <joint name="right_1" type="revolute">
+    <parent link="base_link" />
+    <child link="right_1" />
+    <origin xyz="0.035000 -0.014500 -0.034500" rpy="0.000000 0.000000 0.000000" />
+    <axis xyz="0 1 0" />
+    <limit lower="-1.6" upper="1.6" effort="2" velocity="3" />
+  </joint>
+  <link name="right_2">
+    <visual>
+      <geometry>
+        <mesh filename="meshes/wide/right_2.stl" />
+      </geometry>
+      <material name="right_2_mat">
+        <color rgba="0.62 0.0 0.0 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_000.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_001.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_002.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_003.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_004.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_005.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_006.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_007.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_008.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_009.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_010.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_011.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_012.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_013.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_014.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_015.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_016.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_017.obj" />
+      </geometry>
+    </collision>
+    <collision>
+      <origin rpy="0 0 0" xyz="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/coacd/wide_right_2/wide_right_2_018.obj" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin rpy="0 0 0" xyz="-0.000691561 0.014879375 -0.015567051" />
+      <mass value="0.011583283" />
+      <inertia ixx="5.5816220587e-06" ixy="2.71404013921e-07" ixz="4.8034783582e-07" iyy="4.08980507152e-06" iyz="-6.88678828074e-07" izz="2.32100635805e-06" />
+    </inertial>
+  </link>
+  <joint name="right_2" type="revolute">
+    <parent link="right_1" />
+    <child link="right_2" />
+    <origin xyz="0.000000 0.000000 -0.044500" rpy="0.000000 0.000000 0.000000" />
+    <axis xyz="0 1 0" />
+    <limit lower="-1.6" upper="1.6" effort="2" velocity="3" />
+  </joint>
+</robot>
