@@ -68,6 +68,152 @@ Added
   weights the cluster evaluated with none of the simulator on it. The
   sim-radians-to-encoder-counts map is the one thing neither repo records, so it
   is left unset and ``deploy/calibrate_hand.py`` measures it.
+- Added ``deploy/run.py --no-hand``, which runs the seven arm joints alone and
+  discards the finger half of every action, for checking that the arm reaches
+  the grasp pose before the gripper is trusted. The fingers are reported to the
+  policy as parked at their home pose, which is what the network sees at the
+  start of every sim episode, so the reach is representative and the grasp is
+  not. Exactly one of ``--gripper-port`` / ``--no-hand`` is now required outside
+  ``--dry-run``: on Linux the port cannot be auto-detected, so a forgotten flag
+  would otherwise have meant a silent hand-less run.
+- Added ``deploy/run.py --speed``, a single multiplier over ``--arm-max-vel``,
+  ``--arm-max-acc`` and ``--arm-max-offset``, and lowered those bring-up
+  defaults to 0.25 rad/s, 0.6 rad/s² and 0.08 rad over a 2 s ramp (about a tenth
+  of the |dq| p99 the checkpoint runs at in sim). A slower arm lags its target,
+  so ``--max-jump`` fires more readily; restore ``--arm-max-vel 2.5
+  --arm-max-acc 6.0`` before judging a success rate.
+- Added ``deploy/kinematics.py`` and a Cartesian floor guard,
+  ``deploy/run.py --floor-z`` / ``--floor-lookahead``. The arm was driven into
+  the bench on 2026-08-07: with the speed cap removed the gripper pads dropped
+  213 mm in 0.52 s (0.41 m/s) and ``--max-jump``, which watches joint tracking
+  error, did not reach its threshold until two steps after the pads were
+  already 1 mm under the foam. Tracking error is a lagging indicator of a
+  Cartesian problem by construction — it only grows once the arm is failing to
+  follow, and an arm that follows a bad target perfectly never trips it.
+  ``kinematics.py`` transcribes the arm-to-pad chain from the compiled model
+  and evaluates it in numpy (the robot host has no mujoco), checked against
+  ``mujoco.mj_kinematics`` to 1e-6 m including on the recorded hardware
+  trajectories. The guard compares the measured pad height minus
+  ``descent_rate × --floor-lookahead`` against the floor, because height alone
+  is also too late: at 0.4 m/s the pads cross the last 20 mm in one step.
+  Replayed against the crash, it trips 88 mm above the foam, seven steps before
+  the breach. The floor defaults to the foam top, which the policy never
+  approaches in sim (minimum pad clearance 22 mm over 64 envs × 300 steps).
+- ``deploy/run.py --arm-max-offset`` now defaults to ``tau_max / K_q`` per
+  joint, read from the robot, and accepts seven values as well as one. That
+  quantity is the training environment's own saturation: the wide-claw model
+  sets each joint's ``actfrcrange`` from the sys-id fit to
+  ``[123, 123, 64, 64, 39, 39, 39]`` N·m, which is exactly the Rizon 4S's
+  ``info().tau_max``, so sim and hardware saturate identically. The previous
+  scalar default of 0.08 rad was between 19% (joint1) and 49% (joint5) of that
+  — a rate limit inside the policy's closed loop, which produces a limit cycle
+  rather than a slower version of the trained motion. ``FlexivArm`` warns when
+  the configured offset is under 95% of full authority. The claim in
+  ``deploy/arm.py`` and the README that the sim arm had no torque ceiling was
+  wrong; it read ``actuator_forcerange`` (0,0 on all seven) instead of the
+  joint's ``actfrcrange``.
+- Added ``deploy/run.py --record``, which logs every step's measured joints,
+  raw action, commanded target and depth frame to an npz and writes it on the
+  way out, including after a ``--max-jump`` abort — the aborting step's
+  observation is in the file, since that is the one worth looking at.
+- Added ``scripts/sim_depth.py``, and fixed a 1.325x horizontal magnification in
+  every sim-vs-real depth comparison. ``mujoco_warp`` crops a calibrated camera
+  to the render's aspect (``render_util.py`` shrinks whichever sensor dimension
+  is too large), which is what makes the student's 160x120 render a 640x480
+  centre-crop of the D435's 848x480 sensor and what ``deploy/perception.py``
+  reproduces on the real stream. ``mujoco.Renderer`` does **not** crop — it fits
+  the full 89.42° sensor field into whatever viewport it is given — so
+  ``render_sim_depth.py`` rendering 640x480 and calling it "the crop" squashed
+  89.42° into pixels meaning 73.53°. Measured by rendering the cube at five
+  known bench positions: ``render_u = 0.768 * project_u + 18.0``, against the
+  0.755 that 640/848 predicts and the 1.000 a real crop would give. The scripts
+  now render at the sensor's own 848x480, where the viewport and sensor aspects
+  agree and neither renderer has anything to crop, then apply the same
+  centre-crop and box filter as the deploy path; ``tests/test_sim_depth.py``
+  asserts the two agree pixel for pixel. Deployment was never affected — only
+  the diagnostics — but the artifact was large enough to read as a camera
+  extrinsic error: it made the real claw's silhouette 27% wider than the
+  rendered one and gave it a spurious position-dependent lateral offset
+  swinging from -9 px to +15 px across a joint1 sweep. Corrected, the widths
+  agree to 1 px and the offset is a constant +6 px at every pose.
+- Added ``deploy/capture_sweep.py`` and ``scripts/fit_camera_pose.py``, which
+  measure the camera's pose against the arm across several poses rather than
+  one. ``capture_sweep`` screens every pose before anything moves — pad
+  clearance over the table, both pads inside the frame, and a cap on
+  per-joint travel — refuses the whole sweep if any pose fails rather than
+  stopping halfway, and returns to the starting pose on the way out including
+  after a fault or Ctrl-C. ``fit_camera_pose`` fits the camera's six numbers to
+  the per-pose displacements. It deliberately does **not** fit a joint1 offset:
+  substituting ``p_base = R^T p_cam + cam_pos`` into ``dj*(z x p_base)`` splits
+  it exactly into a camera rotation plus a camera translation, so joint1 is a
+  linear combination of the six camera columns for every pose and no sweep of
+  arm poses can separate them — everything joint1 moves is one rigid body, and
+  a rigid body cannot say what it is rigid with respect to. The first version
+  fitted it anyway and returned a condition number of 2.6e16 and a nonsense
+  -8.7°. Separating them needs a feature that does not turn with joint1, which
+  is what ``deploy/check_camera.py``'s cube is for. Measured over nine poses:
+  the camera's base-frame y is +0.0129 rather than -0.0057, an 18.7 mm lateral
+  offset, fitted with a 1.71 mm residual against 11.92 mm for no correction.
+  Putting that number back into the model drops the rendered-to-real claw
+  offset from 16.5 mm to 3.4 mm at every pose. It is 6.2x the +-3 mm of camera
+  position jitter the policy trained under, so it is outside the trained
+  distribution and neither script writes it: an extrinsic that changes between
+  a diagnosis and a run is worse than a wrong one.
+- Added ``deploy/live_view.py`` and ``scripts/render_sim_depth.py``: the live
+  D435 frame next to the sim's render of the same scene, a signed difference
+  and an overlay, served on localhost. The difference uses two colours only —
+  blue where the real frame is nearer, red where it is further, with a pixel
+  valid in only one of the two saturating to the same colour it is heading
+  towards. The overlay superimposes the two directly, sim on the red channel
+  and real on green+blue, so agreement reads as neutral grey and a
+  misregistered gripper shows as a red ghost beside a cyan one; a signed
+  difference cannot show that, since a shifted object makes a red band and a
+  blue band with nothing tying them together. The stats line reports the whole
+  image shift that best fits the two over the gripper band, in pixels and in
+  millimetres.
+- Added ``deploy/capture_sweep.py`` and ``scripts/fit_camera_pose.py``, which
+  measure the camera's pose against the arm instead of against a plane. The
+  plane fit the current extrinsic came from can only see three of the six
+  numbers — pitch, roll and the camera's height over the table — because a
+  plane has no yaw and no in-plane position. The sweep drives the arm through
+  several poses, screening each one for pad clearance and for both pads staying
+  in frame before anything moves and refusing the whole sweep rather than
+  stopping halfway, and records a depth frame at each; the fit renders the sim's
+  view of the same joint angles and compares. It does not solve for a joint1
+  offset, and says why: a joint1 error decomposes exactly into a camera rotation
+  plus a camera translation, so that column is a linear combination of the
+  camera ones for every pose and the design matrix is singular by construction.
+  Separating them needs something that does not turn with joint1. The fit also
+  reports the claw's silhouette WIDTH in both frames and refuses to be believed
+  when they disagree, because a width mismatch displaces a centroid by an amount
+  that depends on where in the frame the claw sits, which reads as a camera
+  error that is not there.
+- Added ``deploy/check_camera.py``, which projects a cube at a measured
+  base-frame position through the sim's camera model and asks the real D435
+  where it actually sees it, scoring four hypotheses: as modelled, rotated
+  180°, mirrored left-right, mirrored up-down. The depth image is the one
+  policy input nothing else cross-checks, and a mis-mounted camera produces a
+  plausible frame and a confidently wrong reach. It differences against an
+  empty-bench reference rather than looking for the nearest object, since the
+  claw and the camera mount are nearer than the cube at the home pose, and its
+  default cube position is off-centre because a cube near the image centreline
+  cannot separate a mirrored camera from a correct one (2.4 px at the scene's
+  nominal spawn, against 33 px at the default) — a placement that cannot
+  separate the hypotheses is reported as such instead of passing.
+- Added a periodic progress line to ``deploy/run.py`` (``--print-every``)
+  reporting the measured arm pose, the TCP position where RDK provides one, the
+  worst ``|target - measured|`` and the achieved loop rate, plus a per-stage
+  timing breakdown (camera / sensors / policy / command) at the end of every
+  run, printed after an abort too.
+- ``deploy/perception.py`` now streams the D435 at 90 fps (``--camera-fps``) and
+  reads it on a background thread, so ``read()`` returns the latest frame
+  instead of blocking. At the previous 30 fps default ``wait_for_frames`` put a
+  33.3 ms floor under a 20 ms budget, measured on the bench at 44 ms per step —
+  23 Hz against the 50 Hz the policy was trained at, with every step late. A
+  blocking read also aliases the loop to the sensor's phase even at 90 fps.
+  ``--camera-blocking`` restores the old behaviour for comparison, and the run
+  summary counts frames served twice so the staleness the thread trades for is
+  measured rather than assumed.
 - Added ``scripts/wide_dr_ablate.py``, which re-scores one trained checkpoint
   under progressively narrower DR envs to attribute a score drop to a specific
   randomization rather than to "perception DR" as a lump. The switches it flips
@@ -78,6 +224,13 @@ Added
   student while feeding the same observation through onnxruntime, so "the ONNX
   is the evaluated policy" is checked rather than assumed. It also checks that
   ``deploy/`` reassembles the student observation bit for bit.
+- Added ``--surface-z`` to ``deploy/check_camera.py``, the height of whatever
+  the cube is resting on. The resting height used to be hardcoded to the foam
+  top, so running the check on a bench with the foam taken off put the predicted
+  cube 50 mm high — 11.9 px at bench range, against the check's own 8 px
+  tolerance, i.e. a confident report of a camera fault that is not there. The
+  default is unchanged (foam on, the bench the policy was trained against);
+  pass ``-0.015`` for the bare table.
 
 Changed
 ^^^^^^^
@@ -100,6 +253,38 @@ Changed
 Fixed
 ^^^^^
 
+- Fixed the wide-claw ``scene_cam`` extrinsic, which put the camera 19.9 mm to
+  the image-left of where it actually sits, so the gripper landed in a visibly
+  different place in a sim render than in the live D435 frame. The CAD chain was
+  only ever corrected by a table-plane fit, and a plane cannot see rotation about
+  itself or translation within itself — the two in-plane translation components
+  had never been measured. They now are, from a nine-pose sweep
+  (``deploy/capture_sweep.py`` + ``scripts/fit_camera_pose.py``) spanning 31.6°
+  of joint1: position alone fits the set to 1.79 mm against 3.44 mm for rotation
+  alone and 11.69 mm uncorrected, so it is one lateral offset. Applied as
+  ``arm_cfg.CALIB_CAM_OFFSET`` and ``check_camera.CAM_POS_BASE``, which are the
+  same measurement in two frames and must move together. Re-fitting the same
+  sweep afterwards leaves 1.04 mm with nothing further to correct, and
+  ``deploy/live_view``'s best-fit shift of real onto sim goes from du +7 px
+  (19 mm sideways) to du +0 px. The offset is 6.6× ``dr_cfg._CAM_POS_JITTER``,
+  so the current student checkpoint was trained against the old camera and does
+  not inherit the fix; it applies from the next retrain. A joint1 zero-offset
+  would look identical to the sweep — it decomposes exactly into a camera
+  rotation plus a camera translation, so it is singular by construction — and
+  was ruled out separately with the cube, which does not turn with joint1: at
+  (0.508, 0.102) the two hypotheses predict pixels 5.1 px apart and the cube
+  landed 1.79 px from the camera prediction against 4.30 px from the joint1
+  one, with a left-right mirror 44.5 px away. The correction is therefore right
+  for the table and the cube as well as for the arm.
+- Fixed dependency resolution failing with a 404 on ``mujoco``. The pin resolved
+  to a ``py.mujoco.org`` nightly, and that index garbage-collects old builds, so
+  the locked ``3.8.1.dev907177387`` stopped existing (it now serves only 3.10 and
+  3.11, neither of which satisfies the ``~=3.8.0`` floor). ``mujoco`` now comes
+  from PyPI as stable ``3.8.1``, the release of that same dev build. This has to
+  be done with ``override-dependencies``: ``mujoco-warp``'s own pyproject sources
+  ``mujoco`` from the nightly index and uv honours a git dependency's sources, so
+  merely dropping the entry from ``[tool.uv.sources]`` leaves it there and adding
+  a competing index fails with "conflicting indexes for package ``mujoco``".
 - Fixed domain randomization events that target different ``axes`` of the same
   model field (e.g. two ``dr.geom_size`` events scaling axis 0 and axis 1
   separately) silently clobbering each other. Each event now writes back only

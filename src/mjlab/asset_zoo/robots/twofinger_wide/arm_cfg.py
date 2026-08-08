@@ -300,12 +300,10 @@ CAMERA_MOUNT_TILT_DEG = float(
 #   * the lens sits 210.1 mm above the table (point cloud) against 208.9 mm out
 #     of this CAD chain -- and that one never touches the arm
 #
-# ONLY 3 OF THE 6 DoF ARE MEASURED. A plane pins the two rotational DoF that hold
-# pitch, plus the height along its own normal. Yaw about the table normal and the
-# two in-plane translation components are left at CAD, untouched, because a plane
-# cannot see rotation about itself or translation within itself. Stage B (point
-# cloud registered against the posed arm mesh) replaces those. Until it lands,
-# read the tilt as measured and the in-plane position as CAD-accurate.
+# A PLANE ONLY PINS 3 OF THE 6 DoF: the two rotations that hold pitch, plus the
+# height along its own normal. Yaw about the table normal and the two in-plane
+# translations are invisible to it -- a plane cannot see rotation about itself or
+# translation within itself -- so they sat at CAD until stage B below.
 #
 # Applied to the camera only, not to the D435i body: tilting the whole assembly
 # by 1.044 deg would move the lens 25.1 mm * sin(1.044 deg) = 0.46 mm, well inside
@@ -318,7 +316,52 @@ CALIB_CAM_DROT = np.array(
     [0.001546362, -0.018220920, 0.999832789],
   ]
 )
-CALIB_CAM_OFFSET = (-0.000007358, 0.000002304, 0.002132851)  # camera_mount frame, m
+
+# --- stage B: the in-plane translation the plane fit could not see ------------ #
+# Measured 2026-08-07 on Rizon4s-063501 with deploy/capture_sweep.py (nine poses,
+# spanning 31.6 deg of joint1 and 0.37-0.48 m of range) and scripts/fit_camera_
+# pose.py, which registers the real claw's point cloud onto the rendered one at
+# each pose and asks which single camera error explains all nine at once.
+#
+#   camera sits 19.94 mm to the image-LEFT of where the CAD chain puts it
+#   -> base frame (-0.99, +19.94, -1.58) mm, i.e. one lateral offset
+#
+# It is a TRANSLATION and not a rotation, which the fit reports rather than
+# assumes: position alone leaves a 1.79 mm residual over 27 equations, rotation
+# alone leaves 3.44 mm, both together 1.64 mm, and the uncorrected extrinsic
+# 11.69 mm. Six parameters buy 0.15 mm over three, so three is what goes in --
+# especially as the rotational DoF are the ones degenerate with joint1 (below).
+# Condition number 17, so the poses did separate what they claim to.
+#
+# The size is what _D435I_IR_LENS already warns about: the depth origin is the
+# LEFT IR imager and the two imagers are 50 mm apart, so a nominal lens position
+# is wrong by exactly this order. It is also 6.6x _CAM_POS_JITTER (+-3 mm), the
+# camera-position domain randomisation the student trained under -- SO THE
+# CURRENT CHECKPOINT WAS TRAINED AGAINST THE OLD, WRONG CAMERA and does not
+# inherit this fix. It applies from the next retrain; until then the correction
+# makes the sim match the bench, which is what any diff against real is worth.
+#
+# A JOINT1 ZERO-OFFSET WOULD LOOK IDENTICAL TO THE SWEEP, and the sweep alone
+# cannot separate them: substituting p_base = R^T p_cam + cam_pos into
+# dj*(z x p_base) splits it exactly into a camera rotation plus a camera
+# translation, so it lies in the span of the camera's own six numbers at every
+# pose. The design matrix is singular by construction, not for want of data --
+# everything joint1 moves is one rigid body, and a rigid body cannot say what it
+# is rigid WITH RESPECT TO.
+#
+# Settled the same day by the one feature that does NOT turn with joint1: a cube
+# at a measured place on the table (deploy/check_camera.py). At (0.508, 0.102) on
+# the bare bench the two hypotheses predict pixels 5.1 px apart, and the cube
+# landed 1.79 px from the camera prediction against 4.30 px from the joint1 one.
+# So the camera really is the cause, and this correction is right for the table
+# and the cube as well as for the arm. The same frame put a left-right mirror
+# 44.5 px away and a 180 deg rotation 45.3 px, both comprehensively excluded.
+#
+# Corroborating, from the same sweep: a joint1-only fit needs dj = +1.99 deg and
+# still leaves 3.13 mm against camera-position's 1.79 mm, and when both are free
+# joint1 collapses to +0.11 deg. Two degrees is also absurd for a zero offset on
+# encoders good to 3e-5 rad.
+CALIB_CAM_OFFSET = (0.019931531, 0.000989788, 0.000549401)  # camera_mount frame, m
 
 # --- RealSense D435i body (mujoco_menagerie) --------------------------------- #
 # Menagerie's model is geometry only -- 9 textured visual meshes, a fitted
