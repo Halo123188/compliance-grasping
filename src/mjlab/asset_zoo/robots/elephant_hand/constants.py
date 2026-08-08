@@ -256,8 +256,10 @@ def _add_weld_equalities(hand_spec: mujoco.MjSpec) -> None:
   for f in _WELD_FINGERS:
     eq = hand_spec.add_equality()
     eq.name = f"weld_{f['name']}"
-    eq.name1 = f["b1"]
-    eq.name2 = f["b2"]
+    # `str(...)` because the entries mix names and coordinate lists, so the
+    # value type is a union; the same narrowing the ghost-body lookup does.
+    eq.name1 = str(f["b1"])
+    eq.name2 = str(f["b2"])
     eq.objtype = mujoco.mjtObj.mjOBJ_BODY
     eq.type = mujoco.mjtEq.mjEQ_WELD
     data = np.zeros(11)

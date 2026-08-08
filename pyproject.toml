@@ -149,6 +149,10 @@ indent-width = 2
 exclude = [
   "src/mjlab/utils/lab_api",
   "typings",
+  # Robot asset trees, plus the one-off prototyping scripts shipped beside
+  # them. They have never been under this gate and reformatting them churns
+  # thousands of lines of vendored code for no benefit.
+  "assets",
 ]
 
 [tool.ruff.lint]
