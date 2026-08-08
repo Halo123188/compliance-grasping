@@ -49,6 +49,35 @@ Added
   a D435 writes. ``patch_prob`` drops correlated ``patch_size`` blocks -- the
   failure a median filter cannot remove, unlike i.i.d. dropout. All default to
   zero, i.e. the previous behaviour.
+- ``manipulation_mdp.camera_depth`` gained two structured invalid-pixel models
+  and dropped ``patch_prob``/``patch_size``. ``shadow_focal_px`` switches on an
+  OCCLUSION SHADOW: the function finds background-to-foreground steps along
+  each row of the rendered depth and invalidates the
+  ``f*B*(1/z_fg - 1/z_bg)`` pixels of background a stereo pair's second imager
+  cannot see, always on the same side, at 16 shifted comparisons per frame. It
+  reads nothing but depth, so the claw, the cube and the table edge all shadow
+  alike. ``blind_gripper_cfg`` / ``blind_object_cfg`` switch on SURFACE
+  BLINDING: holes punched into named geoms by a low-resolution random field
+  sampled in each object's own bounding box and held for the episode, so a
+  blind patch stays on the same part of the object while the object moves.
+  ``dropout_prob`` now also accepts a ``(lo, hi)`` band drawn per episode. The
+  removed ``patch_prob`` put its blocks at scene-independent positions and
+  redrew them every frame, which a policy can average away; both new terms are
+  anchored to real geometry instead.
+- The wide-claw DR gained object SIZE and LATENCY. ``manipulation_mdp.object_scale``
+  scales a body's geoms by one draw on all three axes -- ``dr.geom_size``'s
+  ``shared_random`` shares across geoms and still draws each axis separately,
+  which turns a cube into a random cuboid -- and carries ``body_inertia`` with
+  it by ``s²``, since at fixed mass ``I ~ m·a²`` and a 55 mm cube would
+  otherwise keep a 50 mm one's rotational inertia. Size and mass are drawn
+  INDEPENDENTLY on purpose: coupling them through a density would teach the
+  policy that a bigger object is a heavier one. Latency splits the same way the
+  rest of the file does -- command delay on the actuators is physics and needs a
+  teacher retrain (``CG_WIDE_CMD_LATENCY_DR``), sensor delay on the student's
+  camera and proprioception is perception and does not
+  (``CG_WIDE_LATENCY_DR``). Both hold their lag across steps rather than
+  redrawing it, because pipeline latency is correlated in time and a per-step
+  redraw is zero-mean jitter a policy averages away.
 - Added ``Mjlab-Grasp-TwoFingerWide-Flexiv-Success-Dr`` and
   ``-Distill-Depth-Success-Dr``, domain-randomized arms of the wide-claw grasp
   and distillation tasks. Physics randomization (object mass and friction, hand
@@ -253,6 +282,27 @@ Changed
 Fixed
 ^^^^^
 
+- The wide-claw D435 no longer renders its own housing. ``enabled_geom_groups``
+  dropped from the default ``(0, 1, 2)`` to ``(0, 1)``; on this model group 2
+  holds the D435i's nine visual meshes and nothing else. The lens sits inside
+  that housing -- ray-cast from the camera at the home pose, the mesh is
+  0.21 mm away along the optical axis -- and the clearance is new: before the
+  stage-B extrinsic correction moved the camera 19.9 mm, the optical axis left
+  the housing without hitting anything. Backface culling hid it at the nominal
+  pose, but ``dr_cam_pos`` jitters the lens by ±3 mm, fourteen times that
+  clearance, and 5 of 64 environments rendered a frame that was ENTIRELY the
+  inside of the housing (depth mean 0.0007–0.0086 against a healthy 0.48);
+  0 of 64 with the jitter off, and 0 of 64 after the fix. Those environments
+  handed the student a blank near-clip image while the teacher labelled them
+  normally, so DAgger was fitting the teacher's action to no scene at all.
+- ``scripts/wide_dr_check.py`` now resets the student env before stepping it.
+  A freshly built env has not run its reset events or resampled its command, so
+  the arm sat at ``qpos = 0`` and the cube had never been placed: every depth
+  statistic in the script was measured on a perfectly reasonable-looking picture
+  of the bench with neither the claw nor the cube in it. Range noise, dropout
+  and the occlusion shadow all work off the table and the wall and never
+  noticed. A new check counts the pixels segmentation reports for each blinding
+  target, so an empty target can no longer be mistaken for a zero rate.
 - Fixed the wide-claw ``scene_cam`` extrinsic, which put the camera 19.9 mm to
   the image-left of where it actually sits, so the gripper landed in a visibly
   different place in a sim render than in the live D435 frame. The CAD chain was

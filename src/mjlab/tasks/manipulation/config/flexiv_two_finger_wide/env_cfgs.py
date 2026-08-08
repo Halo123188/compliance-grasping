@@ -55,12 +55,18 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.sensor import CameraSensorCfg, ContactMatch, ContactSensorCfg
+from mjlab.sensor.camera_sensor import CameraDataType
 from mjlab.tasks.manipulation import mdp as manipulation_mdp
 from mjlab.tasks.manipulation.lift_cube_env_cfg import make_lift_cube_env_cfg
 from mjlab.tasks.manipulation.mdp import LiftingCommandCfg
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
-from .dr_cfg import DEPTH_SENSOR_DR, add_percept_dr, add_physics_dr
+from .dr_cfg import (
+  DEPTH_SENSOR_DR,
+  add_percept_dr,
+  add_physics_dr,
+  add_sensor_latency,
+)
 from .scene import (
   CUBE_HALF,
   RESTING_Z,
@@ -962,8 +968,8 @@ def flexiv_two_finger_grasp_env_cfg(
   return cfg
 
 
-# Depth sensor DR, all four of it, in the units the observation is in (metric
-# depth divided by the 3.0 m cutoff, so 0.01 is 30 mm).
+# Depth sensor DR, in the units the observation is in (metric depth divided by
+# the 3.0 m cutoff, so 0.01 is 30 mm) except where a comment says metres.
 #
 #   RANGE NOISE is not optional and not a detail. Measured upstream (job 42184):
 #   a student trained noise-free and evaluated noise-free scores 67-69%, and the
@@ -971,17 +977,53 @@ def flexiv_two_finger_grasp_env_cfg(
 #   and a CNN fitted to exact depth learns to read absolute values that a real
 #   D435 simply does not report.
 #
-#   PATCH DROPOUT is the one that i.i.d. dropout does not stand in for. Any 3x3
-#   median removes isolated invalid pixels, so a student trained only against
-#   those is trained against nothing; correlated blobs (glare, occlusion
-#   shadow, past the stereo baseline) survive filtering and are what the bench
-#   actually produces. Upstream left this at 0 and never measured it; it is a
-#   known gap being closed here rather than a transcribed number.
+#   THE INVALID PIXELS ARE NOT SALT AND PEPPER. What the bench produces is two
+#   structured failures with geometry behind them -- an occlusion shadow beside
+#   every depth step and blind patches ON the surfaces themselves -- plus a
+#   small speckle residue. Both are modelled below from that geometry. The old
+#   `patch_prob` (random 8x8 blocks, position independent of the scene and
+#   resampled every frame) stood in for them and is now removed: its position
+#   carried no information a policy could learn against, and its per-frame
+#   resampling was averageable in a way a real dropout is not.
 _DEPTH_NOISE = 0.01
-_DEPTH_DROPOUT = 0.02
-_DEPTH_PATCH_PROB = 0.01
-_DEPTH_PATCH_SIZE = (8, 8)  # divides the 120x160 frame: 15 x 20 blocks
+# Speckle residue only. Measured blob p50 is 2 px, so there IS a genuine
+# salt-and-pepper component -- it is just not 2% of the frame, which is what the
+# two structured terms below were being asked to hide inside.
+_DEPTH_DROPOUT = (0.005, 0.01)
 _DEPTH_SCALE_ERR = 0.01
+
+# --- occlusion shadow -------------------------------------------------------- #
+# Horizontal focal length of the RENDERED frame, in pixels. Not a free
+# parameter: the 160x120 render subtends 73.53 deg horizontally (see the
+# CameraSensorCfg comment above), so f = 80 / tan(73.53/2 deg) = 107.08. It has
+# to be the render's f and not the D435's, because the shadow is measured in
+# the pixels the student actually sees.
+_DEPTH_SHADOW_FOCAL_PX = 107.08
+# Stereo baseline, metres. NOT fitted -- inverting the measured shadow widths
+# back through w = f*B*(1/z_fg - 1/z_bg) gives 50 +- 6 mm, which is the D435's
+# nominal baseline. The band is that measurement's spread, not a guess.
+_DEPTH_SHADOW_BASELINE = (0.044, 0.056)
+# How much of a shadow band actually comes back invalid.
+_DEPTH_SHADOW_FILL = (0.70, 0.95)
+# Metric step counting as a background -> foreground edge, metres.
+_DEPTH_SHADOW_STEP = 0.01
+
+# --- surface blinding -------------------------------------------------------- #
+# Fraction of each surface that returns nothing, drawn per episode.
+#
+# The claw number is measured: 4.9-22.7% of the visible claw comes back invalid
+# on the bench, and it swings by 4x with viewing angle, which is why the band is
+# wide rather than centred on a mean.
+_DEPTH_BLIND_GRIPPER = (0.05, 0.25)
+# THE CUBE NUMBER IS THE ONE THING HERE THAT WAS NOT MEASURED. A matte white
+# cube returns better than printed plastic, so it is set lower, but the band is
+# an estimate and should be replaced by a bench measurement before it is used to
+# explain anything.
+_DEPTH_BLIND_OBJECT = (0.02, 0.15)
+# The claw's four finger-link visual meshes, which carry the pads: the pad
+# marker bodies are massless references with no geometry, so the pad surface a
+# camera sees is part of the distal link mesh.
+_CLAW_VIS_GEOMS = (r"(left|right)_[12]_(left|right)_[12]_vis_tf",)
 
 
 def _add_d435_camera_group(
@@ -990,7 +1032,18 @@ def _add_d435_camera_group(
   percept_dr: bool = False,
 ) -> None:
   """Attach the D435 sensor and a "camera" observation group, in place."""
-  modalities: tuple[str, ...] = ("rgb", "depth") if cam_type == "rgbd" else (cam_type,)
+  modalities: tuple[CameraDataType, ...] = (
+    ("rgb", "depth") if cam_type == "rgbd" else (cam_type,)
+  )
+
+  # Surface blinding needs to know which pixels are claw and which are cube, so
+  # it renders segmentation as well -- but segmentation is an INPUT to the depth
+  # DR, not an observation. It is added to `data_types` and deliberately not to
+  # `modalities`, so no term is built for it and the student never sees it.
+  blind_on = percept_dr and DEPTH_SENSOR_DR and "depth" in modalities
+  data_types: tuple[CameraDataType, ...] = (
+    (*modalities, "segmentation") if blind_on else modalities
+  )
 
   # One D435 sensor producing every requested modality (rgb + aligned depth).
   cam_cfg = CameraSensorCfg(
@@ -1008,13 +1061,33 @@ def _add_d435_camera_group(
     # thing that has to be resolved: 2.176 px/deg here against 1.789 at 16:9.
     height=120,
     width=160,
-    data_types=modalities,
-    # enabled_geom_groups left at the default (0, 1, 2). On THIS model group 3
-    # is every collider, groups 1 and 2 are the claw/plate/mount and the arm
-    # visuals, and group 0 is the bench (table, foam, wall and cube all
-    # default to it) plus the D435i's own colliders, which sit behind the lens
-    # and cannot appear in its image. The old (0, 1, 3) would render this claw
-    # as its collision hulls.
+    data_types=data_types,
+    # (0, 1) AND NOT THE DEFAULT (0, 1, 2). On this model:
+    #
+    #   group 0  the Rizon's own link visuals, plus the bench -- table, foam,
+    #            wall and cube all default to it
+    #   group 1  the claw, the base plate and the camera mount
+    #   group 2  THE D435i'S OWN 9 VISUAL MESHES, and nothing else
+    #   group 3  every collider; rendering it would draw this claw as its
+    #            collision hulls, which is what the old (0, 1, 3) did
+    #
+    # Group 2 is dropped because a camera cannot see its own housing, and on
+    # this model it very much could. The lens sits INSIDE that housing: ray-cast
+    # from the camera at the home pose, the D435i's own mesh is 0.21 mm away
+    # along the optical axis and within 1.23-7.8 mm in every other direction.
+    # Backface culling hides it at the nominal pose, which is why this was
+    # invisible -- but `dr_cam_pos` jitters the lens by +-3 mm, fourteen times
+    # that clearance, and 5 of 64 environments then render a frame that is
+    # ENTIRELY the inside of the housing (depth mean 0.0007-0.0086 against a
+    # healthy 0.48). With the jitter off it is 0 of 64. Those environments hand
+    # the student a blank near-clip image while the teacher labels them
+    # normally, so DAgger fits the teacher's action to no scene at all.
+    #
+    # The clearance is NEW: before the stage-B extrinsic correction moved the
+    # camera 19.9 mm (arm_cfg.CALIB_CAM_OFFSET) the optical axis left the
+    # housing without hitting anything. The correction is a MEASUREMENT and
+    # stays; what has to change is that the housing is drawn at all.
+    enabled_geom_groups=(0, 1),
     use_shadows=False,
     use_textures=True,
   )
@@ -1029,9 +1102,17 @@ def _add_d435_camera_group(
       if percept_dr and DEPTH_SENSOR_DR:
         params["range_noise"] = _DEPTH_NOISE
         params["dropout_prob"] = _DEPTH_DROPOUT
-        params["patch_prob"] = _DEPTH_PATCH_PROB
-        params["patch_size"] = _DEPTH_PATCH_SIZE
         params["scale_err"] = _DEPTH_SCALE_ERR
+        params["shadow_focal_px"] = _DEPTH_SHADOW_FOCAL_PX
+        params["shadow_baseline"] = _DEPTH_SHADOW_BASELINE
+        params["shadow_fill"] = _DEPTH_SHADOW_FILL
+        params["shadow_step"] = _DEPTH_SHADOW_STEP
+        params["blind_gripper_cfg"] = SceneEntityCfg(
+          "robot", geom_names=_CLAW_VIS_GEOMS
+        )
+        params["blind_gripper_prob"] = _DEPTH_BLIND_GRIPPER
+        params["blind_object_cfg"] = SceneEntityCfg("cube", geom_names=("cube",))
+        params["blind_object_prob"] = _DEPTH_BLIND_OBJECT
     else:
       func = manipulation_mdp.camera_rgb
     terms[f"d435_{mod}"] = ObservationTermCfg(func=func, params=params)
@@ -1125,6 +1206,14 @@ def flexiv_two_finger_distill_env_cfg(
     # distilled on a cleaner signal than it will ever see.
     enable_corruption=not play,
   )
+
+  # AFTER the student group exists, and that ordering is the whole point: the
+  # student is a deepcopy of the teacher's terms, so lagging them any earlier
+  # lags the TEACHER and the student merely inherits it. The teacher would then
+  # be labelling from stale joint angles, which makes the labels worse rather
+  # than the student tougher.
+  if percept_dr:
+    add_sensor_latency(cfg)
 
   # End the episode once the cube is off the table. The state task runs without
   # this and merely wastes the remaining steps; under DAgger every one of those

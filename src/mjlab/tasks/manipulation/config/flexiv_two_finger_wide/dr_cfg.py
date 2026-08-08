@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import math
 import os
+from copy import deepcopy
 
 from mjlab.asset_zoo.robots.twofinger_wide.arm_cfg import (
   ARM_ACTUATOR_GROUP,
@@ -37,6 +38,7 @@ from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs.mdp import dr
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.tasks.manipulation import mdp as manipulation_mdp
 
 # Bodies whose inertial properties are CAD estimates of printed parts rather
 # than weighed values -- and stale ones at that, since the servo horns were cut
@@ -47,6 +49,11 @@ ARM_JOINT_PATTERN = r"joint[1-7]"
 # The cube's compile-time mass, from scene.get_cube_spec. pseudo_inertia scales
 # mass by exp(2*alpha), so a mass RANGE has to be converted into an alpha range
 # rather than written directly -- and it must be done against this number.
+# Command latency destabilizes a position servo that was tuned without it, so it
+# gets its own switch: a run that goes unstable has to be attributable to this
+# rather than to "the physics DR" as a lump. Read before `add_physics_dr` uses it.
+CMD_LATENCY_DR = (os.environ.get("CG_WIDE_CMD_LATENCY_DR") or "1") != "0"
+
 _CUBE_MASS = 0.06
 _CUBE_MASS_RANGE = (0.03, 0.15)  # kg, upstream `dr_cube_mass`
 
@@ -80,6 +87,35 @@ def add_physics_dr(cfg: ManagerBasedRlEnvCfg) -> None:
       "alpha_range": _alpha(
         _CUBE_MASS_RANGE[0] / _CUBE_MASS, _CUBE_MASS_RANGE[1] / _CUBE_MASS
       ),
+    },
+  )
+
+  # SIZE, and it must come after the inertia draw above: `object_scale`
+  # multiplies whatever `body_inertia` currently holds, and `pseudo_inertia`
+  # rewrites that field absolutely from defaults on every reset.
+  #
+  # +-10% is a chosen band, not a measured one. It is bounded by the reward
+  # constants rather than by the claw: the aperture law `sep(q) = 50.1 + 134.0q`
+  # spans 40.0-86.9 mm, so the hand could hold a far wider spread, but
+  # PAD_SEP_AT_GRASP and CONTACT_DIST were both tuned against a 50 mm cube and
+  # start mis-measuring the grasp before the claw runs out of travel.
+  #
+  # Mass and size are drawn INDEPENDENTLY, which is the point. Coupling them
+  # through a density would teach the policy that a bigger cube is a heavier
+  # one; the bench can hand it a 55 mm foam block and a 45 mm steel one, and the
+  # only safe thing for it to learn is that the two are unrelated.
+  #
+  # Two couplings this does not correct, both small and both real: a bigger cube
+  # rests with its centre higher (at +-10%, +-2.5 mm), and `cube_lifted` measures
+  # against an absolute bar, so a big cube starts marginally closer to it. And
+  # the spawn height is already raised to clear the highest bench draw, which
+  # covers the largest cube too.
+  cfg.events["dr_cube_scale"] = EventTermCfg(
+    func=manipulation_mdp.object_scale,
+    mode="reset",
+    params={
+      "asset_cfg": SceneEntityCfg("cube", body_names=("cube",), geom_names=("cube",)),
+      "scale_range": (0.9, 1.1),
     },
   )
 
@@ -220,6 +256,41 @@ def add_physics_dr(cfg: ManagerBasedRlEnvCfg) -> None:
   # policy never had to be right about anything except the cube. +-0.03 rad.
   cfg.events["reset_robot_joints"].params["position_range"] = (-0.03, 0.03)
 
+  # --- command latency ------------------------------------------------------
+  # THIS HALF IS PHYSICS, so it lands here rather than with the sensor latency
+  # in `add_percept_dr`, and turning it on means RETRAINING THE TEACHER: a
+  # command that arrives late changes the dynamics the teacher's labels are
+  # correct for, which observation latency does not.
+  #
+  # Lags are in PHYSICS timesteps (5 ms at the 200 Hz sim), not control steps.
+  # Both bands are ESTIMATES from the hardware, not measurements -- nothing in
+  # `deploy/` times the round trip yet, and that measurement should replace
+  # these before either is used to explain a sim-to-real gap.
+  #
+  #   arm     1-3 steps (5-15 ms).  Flexiv RDK writes joint targets over its own
+  #           real-time link and the drive closes its loop far above 200 Hz, so
+  #           the delay is transport, not control.
+  #   fingers 4-10 steps (20-50 ms). A serial servo bus in front of a
+  #           DC15-A01-class hobby servo, an order of magnitude slower than the
+  #           arm, which is the same asymmetry `dr_finger_gains` exists for.
+  #
+  # `delay_hold_prob` keeps the lag from resampling every step. Bus latency is
+  # correlated in time -- a link that is running late stays late for a while --
+  # and a per-step redraw is zero-mean jitter the policy averages away, which is
+  # the same trap `scale_err` is written to avoid on the depth side.
+  if not CMD_LATENCY_DR:
+    return
+  articulation = cfg.scene.entities["robot"].articulation
+  assert articulation is not None
+  for group, (lo, hi) in (
+    (ARM_ACTUATOR_GROUP, (1, 3)),
+    (FINGER_ACTUATOR_GROUP, (4, 10)),
+  ):
+    act = articulation.actuators[group]
+    act.delay_min_lag = lo
+    act.delay_max_lag = hi
+    act.delay_hold_prob = 0.8
+
 
 # Camera extrinsic jitter. Upstream uses +-0.5 deg on all three angles, on the
 # argument that the D435i is bolted down once and not remounted between trials.
@@ -308,6 +379,72 @@ CAM_POS_AXES = [
 ]
 CAM_ROT_DR = (os.environ.get("CG_WIDE_CAM_ROT_DR") or "1") != "0"
 DEPTH_SENSOR_DR = (os.environ.get("CG_WIDE_DEPTH_DR") or "1") != "0"
+SENSOR_LATENCY_DR = (os.environ.get("CG_WIDE_LATENCY_DR") or "1") != "0"
+
+# Sensor latency, in CONTROL steps. The sim runs 200 Hz physics with decimation
+# 4, so one control step is 20 ms and `deploy/run.py` closes its loop at the
+# matching 50 Hz.
+#
+# CAMERA 1-3 steps (20-60 ms). Two contributions, neither of them measured here:
+# the D435's own depth pipeline (exposure, the D4 ASIC's stereo, USB3, and
+# librealsense) is tens of milliseconds, and the stream runs at 90 fps against a
+# 50 Hz loop, so the newest frame is already up to 11 ms old when it is read.
+# `deploy/` does not time this yet; the band should be replaced by a measurement
+# before it is used to explain anything.
+#
+# PROPRIOCEPTION 0-1 steps. The Flexiv RDK streams joint state at 1 kHz and the
+# loop reads the latest sample, so the error is sub-control-step -- it is here to
+# stop the policy treating joint angles as simultaneous with the image, not
+# because the arm is slow.
+#
+# `delay_hold_prob` because pipeline latency is CORRELATED IN TIME. A per-step
+# redraw is zero-mean jitter that a policy averages out over a few frames, i.e.
+# training against nothing -- the same failure the depth DR's per-episode holds
+# exist to avoid. Holding the lag models a pipeline that runs at one latency and
+# occasionally shifts to another, which is what a real one does.
+_CAM_LAG = (1, 3)
+_PROPRIO_LAG = (0, 1)
+_LAG_HOLD_PROB = 0.9
+
+
+def add_sensor_latency(cfg: ManagerBasedRlEnvCfg) -> None:
+  """Make the student's observations arrive late. Mutates ``cfg``.
+
+  Perception, not physics: the command still reaches the motor when it did, so
+  the teacher's labels stay correct and this needs no teacher retrain. The
+  COMMAND half lives in `add_physics_dr` and does need one.
+
+  Only the SENSED terms are delayed. `actions` is the policy's own previous
+  output and `goal_height` is a commanded number -- both are known exactly and
+  on time on the real robot, and delaying them would model a latency that does
+  not exist.
+
+  And only the DEPLOYED policy's group. On the distillation task "actor" is the
+  TEACHER, reading privileged state through an already-trained checkpoint;
+  lagging its inputs would degrade the labels the student is being fitted to
+  rather than toughening the student.
+  """
+  if not SENSOR_LATENCY_DR:
+    return
+  policy = "student" if "student" in cfg.observations else "actor"
+  lagged = [("camera", "d435_depth", _CAM_LAG)] if "camera" in cfg.observations else []
+  lagged += [
+    (policy, term, _PROPRIO_LAG)
+    for term in ("joint_pos", "joint_vel")
+    if term in cfg.observations[policy].terms
+  ]
+  for group, term, (lo, hi) in lagged:
+    # DEEPCOPY, because the groups SHARE TERM OBJECTS. `student.joint_pos` is
+    # the same object as `actor.joint_pos` and `critic.joint_pos` (the same
+    # aliasing the `biased` note in `add_physics_dr` relies on), so assigning to
+    # it in place lags the teacher and the critic as well -- silently, and in
+    # the one direction that makes the labels worse instead of the student
+    # tougher.
+    t = deepcopy(cfg.observations[group].terms[term])
+    t.delay_min_lag = lo
+    t.delay_max_lag = hi
+    t.delay_hold_prob = _LAG_HOLD_PROB
+    cfg.observations[group].terms[term] = t
 
 
 def add_percept_dr(cfg: ManagerBasedRlEnvCfg) -> None:

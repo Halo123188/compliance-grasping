@@ -12,8 +12,10 @@ Checks, in order:
      printed against the range that was asked for
   3. the cube's inertia is consistent with its randomized mass (pseudo_inertia,
      not body_mass -- the whole reason for using it)
-  4. every perception DR term moved, and the depth stream shows all four of
-     range noise, i.i.d. dropout, block dropout and per-episode scale error
+  4. every perception DR term moved, and the depth stream shows range noise,
+     speckle dropout, the one-sided occlusion shadow, surface blinding that
+     lands on the claw and cube rather than the bench, and a per-episode scale
+     error
 
   uv run python scripts/wide_dr_check.py
 """
@@ -26,7 +28,10 @@ import numpy as np
 import torch
 
 from mjlab.envs import ManagerBasedRlEnv
+from mjlab.managers.scene_entity_config import SceneEntityCfg
+from mjlab.sensor import CameraSensorCfg
 from mjlab.tasks.manipulation import mdp as manipulation_mdp
+from mjlab.tasks.manipulation.mdp.observations import _global_geom_ids
 from mjlab.tasks.registry import load_env_cfg
 
 TEACHER = "Mjlab-Grasp-TwoFingerWide-Flexiv-Success-Dr"
@@ -49,6 +54,13 @@ def cam_obs(env: ManagerBasedRlEnv) -> torch.Tensor:
   out = obs["camera"]
   assert isinstance(out, torch.Tensor)
   return out
+
+
+def _resolved(env: ManagerBasedRlEnv, name: str, geoms: tuple[str, ...]):
+  """A SceneEntityCfg resolved by hand, since we bypass the term manager here."""
+  cfg = SceneEntityCfg(name, geom_names=geoms)
+  cfg.resolve(env.scene)
+  return cfg
 
 
 def spread(t: torch.Tensor) -> tuple[float, float]:
@@ -223,9 +235,14 @@ def main() -> None:
     f"{lo:.2f}..{hi:.2f} (asked 0.50..1.20)",
   )
 
-  # A solid 50 mm cube has I = m*a^2/6 on every axis. If inertia tracked mass,
-  # this ratio is the same for every env; if only the mass moved it is not.
-  side = 2.0 * float(m.geom_size[cube_g, 0])
+  # A solid cube has I = m*a^2/6 on every axis. If inertia tracked mass, this
+  # ratio is the same for every env; if only the mass moved it is not.
+  #
+  # `a` is read PER ENV from the model, not from the compile-time 50 mm.
+  # `dr_cube_scale` draws +-10% and carries the inertia by s^2, so a fixed side
+  # makes this check fail by exactly 1.1^2 - 1 = 21% on the largest draw --
+  # reporting the size DR as an inertia bug.
+  side = 2.0 * sm.geom_size[:, cube_g, 0]
   expect = sm.body_mass[:, cube_id] * side * side / 6.0
   rel = float((sm.body_inertia[:, cube_id, 0] / expect - 1.0).abs().max())
   check(
@@ -271,11 +288,23 @@ def main() -> None:
   # none of this is switched on.
   from mjlab.tasks.manipulation.config.flexiv_two_finger_wide import env_cfgs as ec
 
-  # STEP FIRST. The camera is only rendered by `sim.sense()`, which runs inside
-  # step() -- on a freshly built env `sensor.data.depth` is still all zeros, and
-  # a frame of zeros clamps to min_depth and reads as a uniform 0.0033
-  # everywhere. Every depth statistic taken off that frame is meaningless while
-  # looking entirely plausible.
+  # RESET, THEN STEP, and both are load-bearing.
+  #
+  # step() first because the camera is only rendered by `sim.sense()`, which
+  # runs inside it -- on a freshly built env `sensor.data.depth` is still all
+  # zeros, and a frame of zeros clamps to min_depth and reads as a uniform
+  # 0.0033 everywhere. Every depth statistic taken off that frame is meaningless
+  # while looking entirely plausible.
+  #
+  # reset() first because a freshly built env has not run its reset events or
+  # resampled its command: the arm sits at qpos = 0 and the cube has not been
+  # placed. The frame that comes back is a perfectly reasonable-looking picture
+  # of the bench with NEITHER THE CLAW NOR THE CUBE IN IT, so anything measured
+  # per-object silently measures nothing. Depth noise and the occlusion shadow
+  # do not notice -- they work off the table and the wall just as happily --
+  # which is exactly why this went unseen until the blinding checks below asked
+  # a question that only the claw and the cube could answer.
+  senv.reset()
   senv.step(torch.zeros(N, senv.action_manager.total_action_dim, device=senv.device))
 
   def depth(**kw) -> torch.Tensor:
@@ -292,25 +321,80 @@ def main() -> None:
   )
   z_noise = zero_pct(depth(range_noise=ec._DEPTH_NOISE))
   z_drop = zero_pct(depth(dropout_prob=ec._DEPTH_DROPOUT))
-  z_patch = zero_pct(
-    depth(patch_prob=ec._DEPTH_PATCH_PROB, patch_size=ec._DEPTH_PATCH_SIZE)
+  shadow_kw = dict(
+    shadow_focal_px=ec._DEPTH_SHADOW_FOCAL_PX,
+    shadow_baseline=ec._DEPTH_SHADOW_BASELINE,
+    shadow_fill=ec._DEPTH_SHADOW_FILL,
+    shadow_step=ec._DEPTH_SHADOW_STEP,
+  )
+  grip_cfg = _resolved(senv, "robot", ec._CLAW_VIS_GEOMS)
+  obj_cfg = _resolved(senv, "cube", ("cube",))
+  blind_kw = dict(
+    blind_gripper_cfg=grip_cfg,
+    blind_gripper_prob=ec._DEPTH_BLIND_GRIPPER,
+    blind_object_cfg=obj_cfg,
+    blind_object_prob=ec._DEPTH_BLIND_OBJECT,
+  )
+  # Blinding can only fire on pixels the camera actually returns for those
+  # geoms, so an empty target is the one way it reports "working" while doing
+  # nothing. Counted here, before the effect, so a zero rate can be told apart
+  # from a zero target.
+  seg0 = senv.scene["d435"].data.segmentation
+  assert seg0 is not None, "the camera is not rendering segmentation"
+  vis = {}
+  for label, c in (("claw", grip_cfg), ("cube", obj_cfg)):
+    ids_c = _global_geom_ids(senv, c)
+    vis[label] = int((seg0[..., 0].unsqueeze(-1) == ids_c).any(-1).sum())
+  cam_cfg = next(
+    s
+    for s in (senv.cfg.scene.sensors or ())
+    if isinstance(s, CameraSensorCfg) and s.name == "d435"
   )
   print(
-    f"        zero%% by cause: range_noise {z_noise:.2f}  "
-    f"dropout {z_drop:.2f}  patch {z_patch:.2f}"
+    f"        sensor data_types {tuple(cam_cfg.data_types)}, "
+    f"seg ids present {sorted(torch.unique(seg0[..., 0]).tolist())[:14]}"
   )
-  check(1.0 < z_drop < 4.0, "i.i.d. dropout", f"{z_drop:.2f}% (asked 2)")
-  check(0.3 < z_patch < 4.0, "block dropout", f"{z_patch:.2f}% (asked ~1)")
+  print(
+    f"        wanted: claw {_global_geom_ids(senv, grip_cfg).tolist()}, "
+    f"cube {_global_geom_ids(senv, obj_cfg).tolist()} -> "
+    f"claw {vis['claw']} px, cube {vis['cube']} px"
+  )
+  check(min(vis.values()) > 0, "blind targets are in frame", str(vis))
 
-  # Blocks, not just speckle: a fully-zero 8x8 tile is essentially impossible
-  # from 2% i.i.d. dropout (0.02^64).
-  z = depth(patch_prob=ec._DEPTH_PATCH_PROB, patch_size=ec._DEPTH_PATCH_SIZE) == 0.0
-  tiles = z.float().reshape(z.shape[0], 1, 15, 8, 20, 8).mean(dim=(3, 5))
-  check(
-    float((tiles == 1.0).float().sum()) > 0,
-    "block dropout is blocky",
-    f"{int((tiles == 1.0).sum())} full 8x8 tiles",
+  z_shadow = zero_pct(depth(**shadow_kw))
+  z_blind = zero_pct(depth(**blind_kw))
+  print(
+    f"        zero%% by cause: range_noise {z_noise:.2f}  "
+    f"dropout {z_drop:.2f}  shadow {z_shadow:.2f}  blind {z_blind:.2f}"
   )
+  check(0.3 < z_drop < 1.5, "i.i.d. dropout", f"{z_drop:.2f}% (asked 0.5-1.0)")
+  check(z_shadow > 0.05, "occlusion shadow", f"{z_shadow:.2f}% of the frame")
+
+  # The shadow is COUPLED TO THE SCENE, which is the whole difference between
+  # it and the random blocks it replaces: every pixel it invalidates has a
+  # background -> foreground step within reach to its right, and none of them
+  # is anywhere else. Re-derived here from the raw sensor rather than from the
+  # observation, so a wiring error cannot make this agree with itself.
+  zm = senv.scene["d435"].data.depth
+  assert zm is not None
+  zm = zm.permute(0, 3, 1, 2).clamp(0.01, 3.0)
+  step = (zm[..., :-1] - zm[..., 1:]) > ec._DEPTH_SHADOW_STEP
+  reach = torch.zeros_like(zm, dtype=torch.bool)
+  for k in range(16):
+    reach[..., : step.shape[-1] - k] |= step[..., k:]
+  new_invalid = (depth(**shadow_kw) == 0.0) & (clean != 0.0)
+  beside = float((new_invalid & reach).sum() / new_invalid.sum().clamp_min(1))
+  check(beside > 0.999, "shadow sits beside a depth step", f"{beside * 100:.2f}%")
+
+  # Blinding lands ON the claw and the cube, not on the bench: every blinded
+  # pixel must be a pixel that segmentation says belongs to one of those geoms.
+  seg = senv.scene["d435"].data.segmentation
+  assert seg is not None, "the camera is not rendering segmentation"
+  ids = torch.cat([_global_geom_ids(senv, grip_cfg), _global_geom_ids(senv, obj_cfg)])
+  target = ((seg[..., 0].unsqueeze(-1) == ids).any(-1)).unsqueeze(1)
+  blinded = (depth(**blind_kw) == 0.0) & ~(depth() == 0.0)
+  on_target = float((blinded & target).sum() / blinded.sum().clamp_min(1))
+  check(on_target > 0.99, "blinding lands on its geoms", f"{on_target * 100:.1f}% on")
 
   # Range noise: two evaluations of the same rendered frame must differ, on
   # most pixels and by no more than the half-width asked for.
@@ -338,7 +422,14 @@ def main() -> None:
   dparams = senv.cfg.observations["camera"].terms["d435_depth"].params
   missing = [
     k
-    for k in ("range_noise", "dropout_prob", "patch_prob", "scale_err")
+    for k in (
+      "range_noise",
+      "dropout_prob",
+      "scale_err",
+      "shadow_focal_px",
+      "blind_gripper_cfg",
+      "blind_object_cfg",
+    )
     if not dparams.get(k)
   ]
   check(
