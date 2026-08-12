@@ -64,6 +64,72 @@ camera       (1,120,160) depth, clamp(m, 0.01, 3.0) / 3.0
 `obs[22:33]` is the raw network output, not the joint target it became. Feeding
 the target back is dimensionally plausible and completely wrong.
 
+## Which checkpoint, and what changes with it
+
+Three are deployable and `run.py` takes any of them. Two things differ between
+them, and only one of the two is checked for you.
+
+| checkpoint | obs | `calib.RATE_LIMIT` |
+|---|---|---|
+| `2026-08-06_20-53-44_s3_dr_fine` | 34 | **`None`** — no limiter in its action term |
+| `2026-08-11_06-12-17_s_facelevel` | 34 | `(1.0 ×6, 1.5, 3.0 ×4)` |
+| `2026-08-10_20-21-25_s_g1_relabel` | 34 | `(1.0 ×6, 1.5, 3.0 ×4)` |
+| `2026-08-11_00-52-56_s_g1_hist` | **136** | `(1.0 ×6, 1.5, 3.0 ×4)` |
+
+**The observation width is read off the ONNX**, so nothing has to be set for
+`-hist` and feeding a 34-d vector to it raises at load rather than deploying.
+**The rate limit is not**, and it is the one number an operator still has to
+match by hand — see the block comment on `calib.RATE_LIMIT`. Only `s3_dr_fine`
+needs it set back to `None`; the other three trained under identical limits and
+logged `rate_scale` 1.0 for their whole run.
+
+`relabel` and `hist` are otherwise the same deployment as `facelevel`.
+`relabel_achievable` changes the distillation loss (the student regresses onto
+the teacher's request *after* its rate limiter clipped it) and is invisible from
+here.
+
+### The 136-d observation is not four stacked observations
+
+`-hist` reads four control steps, and mjlab applies a group's `history_length`
+to each **term**, so each term carries its own history and the terms are laid
+out one after another:
+
+```
+obs[  0: 44]  joint_pos    at t−3, t−2, t−1, t
+obs[ 44: 88]  joint_vel    at t−3, t−2, t−1, t
+obs[ 88:132]  last_action  at t−3, t−2, t−1, t
+obs[132:136]  goal_height  at t−3, t−2, t−1, t
+```
+
+Four whole 34-d observations end to end is the same 136 numbers in the wrong
+order, and nothing downstream can tell: a mis-ordered 136-vector is a valid
+136-vector. Fed the frame-major version on a moving sequence, this checkpoint
+returns `max|a| = 301` against the correct layout's `0.42` — so `--max-action`
+would in fact catch it, but only after it had been flown.
+
+Two independent confirmations that the layout above is the real one. The
+baked-in normalizer's last four dimensions share one mean (0.5492) and one std
+(0.0391), which is `goal_height` four times over — frame-major would put a
+single `goal_height` at dim 135 and three action dims beside it. And
+`scripts/wide_onnx_parity.py` compares the assembled vector against the env's
+own `student` group, which is what to run before flying it:
+
+```sh
+sbatch sbatch/wide_parity.sbatch \
+  Mjlab-Grasp-TwoFingerWide-Flexiv-Distill-Depth-Success-Dr-SatPen-Smooth-Hist \
+  model_2999.pt 2026-08-11_00-52-56_s_g1_hist.onnx
+```
+
+`relabel`'s task is the same id without the `-Hist`. **Both live in the run's
+own `git/compliance-grasping.diff`, not on this branch** — the parity check
+needs that tree checked out, since it builds the env the checkpoint trained in.
+
+The history is **backfilled** at reset — the first observation of a trial is one
+pose repeated four times, not one pose behind three zero frames — because that
+is what `CircularBuffer` does on its first push after a reset. So `policy.reset()`
+between trials matters more for this checkpoint than for the others, and
+`observe()` is stateful: one call advances the history by one step.
+
 ## What the two controllers are
 
 - **Hand** — 4× DYNAMIXEL XC330-M181-T on a Teensy 4.0, **Current-Based Position
@@ -110,6 +176,18 @@ the target back is dimensionally plausible and completely wrong.
    `None` and `hand.py` refuses to arm until they are filled.
    ```sh
    uv run python -m deploy.calibrate_hand --port /dev/ttyACM0
+   # the scale, measured against a caliper rather than an aperture model:
+   .venv-deploy/bin/python -m deploy.calibrate_finger_scale \
+       --port /dev/ttyACM0 --method caliper
+   ```
+   Both want the motors parked at 0 counts first, which is the gripper repo's
+   own CLI. **Its docs are written for a Mac** — `~/.platformio/penv/bin/python`
+   does not exist on a Linux host, and its `find_port()` globs
+   `/dev/cu.usbmodem*` and exits with "no Teensy serial port found". Use the
+   deploy venv (it has pyserial) and name the port:
+   ```sh
+   .venv-deploy/bin/python ../gripper/firmware/host/gripper_ctl.py /dev/ttyACM0
+   #   h  arm      : cmd -> `pos 1 1 0`   s  status      l  limp      q  quit
    ```
 4. **Calibrate the camera along its optical axis** — see below. This is worth
    more than anything else on this list.
@@ -328,6 +406,23 @@ an absolute joint goal the arm never reaches (the offset clamp holds it back),
 so its forward kinematics sit far below anything the gripper visits: checking it
 aborted run1 at step 5 of 648, in a run whose pads never went below the foam.
 
+**The 0.15 s default is tuned for a slow arm, and a fast one trips it on every
+approach.** The lookahead extrapolates the current descent rate as if it will
+continue, which it does not — the policy decelerates into the grasp. At the
+bring-up `--arm-max-vel 0.25` that cost nothing (2 trips in 20 runs). At
+`--arm-max-vel 1.2` the approach descends at ~0.31 m/s, the lookahead subtracts
+47 mm, and it fires at a pad height of ~79 mm: **13 of 15 runs on 2026-08-11
+were stopped this way**, none of them anywhere near the foam (the lowest pad in
+that batch was 50.7 mm, against a 35 mm floor and the sim's own 57 mm minimum).
+
+Replaying all 15 at `--floor-lookahead 0.08` fires on none of them, and
+replaying the 2026-08-07 crash at 0.08 still stops it **4 steps before the
+breach** (0.15 s buys 7 steps, 0.05 s buys 3). So run a fast arm with
+`--floor-lookahead 0.08`. The default is left at 0.15 until someone re-derives
+it against a deceleration model rather than a constant-velocity one, because the
+number that is right for a 0.3 m/s approach is not obviously right for a 0.7 m/s
+dive.
+
 ### Torque authority is not a deployment choice
 
 `--arm-max-offset` caps `|commanded − measured|`, so it caps the impedance
@@ -458,15 +553,25 @@ expect the real grip to be the weaker of the two.
   ~0.029 so an out-of-range value lands tens of sigma out. The output is an
   absolute joint target that goes straight to the arm.
 
-  Two guards, both load-bearing. `policy.act()` clamps every target to
+  Three guards, all load-bearing. `policy.act()` clamps every target to
   `calib.JOINT_LIMITS`, which turns that blow-up into a saturated but legal
   command. `run.py --max-action` then stops the loop, judging the **raw action**
   rather than how far the target sits from the measured angle — a position servo
   legitimately lags while reaching, so that distance measures intent, not
   malfunction, and an earlier version of this guard aborted healthy runs on it.
+  `--max-jump` is kept alongside it, on the arm joints only and at a threshold
+  (1.2 rad) set from this checkpoint's own sim behaviour, because the two watch
+  different failures: the raw action catches a blown-up *inference*, the jump
+  catches an arm that has stopped following a perfectly reasonable one. Under
+  `calib.RATE_LIMIT` the raw-action guard is the one that still fires in time —
+  the limiter publishes at most 20 mrad of new arm motion per step, so a `|600|`
+  action and a `|3|` one produce the same first command.
 - **`GripperLink`'s port auto-detect is macOS-only** (`/dev/cu.usbmodem*`). On
   Linux the Teensy is `/dev/ttyACM0` and auto-detect fails with "no Teensy
-  serial port found" while the board is plugged in. Pass `--gripper-port`.
+  serial port found" while the board is plugged in. Pass `--gripper-port`. The
+  same applies to the gripper repo's `gripper_ctl.py`, which additionally tells
+  you to run it with `~/.platformio/penv/bin/python` — a Mac path. Name the port
+  as its first argument and run it with `.venv-deploy/bin/python`.
 - **Which physical finger is "left" is a measurement, not a convention.** Get it
   backwards and every asymmetric grasp mirrors, silently.
 - **The distal joints are the weak part of the hand calibration.** Aperture is a

@@ -16,6 +16,13 @@ Also checks that `deploy/policy.py`'s hand-assembled observation reproduces the
 env's `student` group exactly -- that vector is the other thing that fails
 silently, since a mis-ordered 34-vector is still a valid 34-vector.
 
+That second check is the ONLY thing that verifies a history checkpoint's
+stacking order end to end. `deploy.policy.stack_history` claims the layout is
+term-major and oldest-first; here the env states what it actually is, at 136
+numbers a step, and a wrong claim shows up as a large obs difference rather
+than as a policy that merely does worse on the bench. Run this before flying
+2026-08-11_00-52-56_s_g1_hist.
+
   uv run python scripts/wide_onnx_parity.py TASK CKPT.pt POLICY.onnx
 """
 
@@ -35,7 +42,7 @@ from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from deploy import calib  # noqa: E402
-from deploy.policy import StudentPolicy  # noqa: E402
+from deploy.policy import StudentPolicy, stack_history  # noqa: E402
 
 N, STEPS, DEV = 32, 60, "cuda:0"
 
@@ -46,6 +53,27 @@ N, STEPS, DEV = 32, 60, "cuda:0"
 # about whether the export is the right policy.
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
+
+
+def _name_dim(w: int, history: int) -> str:
+  """Which term, which joint and how many steps back observation dim `w` is.
+
+  Worth the arithmetic: under history the dimension numbers stop being
+  readable by eye, and "dim 94" versus "last_action right_1, 2 steps back" is
+  the difference between a lead and a number.
+  """
+  names = ("joint_pos", "joint_vel", "last_action", "goal_height")
+  offset = 0
+  for term, width in zip(names, calib.OBS_TERM_WIDTHS, strict=True):
+    block = width * history
+    if w < offset + block:
+      i = w - offset
+      lag = history - 1 - i // width  # 0 = this step
+      label = calib.JOINT_NAMES[i % width] if width > 1 else ""
+      age = "" if history == 1 else f", {lag} steps back"
+      return f"{term} {label}{age}".replace("  ", " ")
+    offset += block
+  return "out of range"
 
 
 def main() -> int:
@@ -70,6 +98,13 @@ def main() -> int:
   obs = wrapped.reset()[0]
   act_diff, obs_diff = [], []
   last_action = np.zeros((N, 11), dtype=np.float32)
+  # (N, H, 34), oldest first. H comes from the checkpoint, so a plain policy
+  # runs the same code with H = 1 and no stacking to get wrong. Safe to fill
+  # over the whole window rather than tracking resets: `cfg.terminations = {}`
+  # above leaves only the time limit, and STEPS is 60 steps of a much longer
+  # episode, so no env resets inside the comparison.
+  hist = np.zeros((N, deployed.history_length, calib.OBS_FRAME_DIM), np.float32)
+  first = True
 
   for _ in range(STEPS):
     with torch.inference_mode():
@@ -91,8 +126,9 @@ def main() -> int:
     # against a vector the policy never saw.
     jp = robot.data.joint_pos_biased.cpu().numpy()
     jv = robot.data.joint_vel.cpu().numpy()
-    gh = student[:, 33]
-    mine = np.stack(
+    # The NEWEST goal_height, which is the last element of either layout.
+    gh = student[:, -1]
+    frames = np.stack(
       [
         np.concatenate(
           [
@@ -105,6 +141,15 @@ def main() -> int:
         for i in range(N)
       ]
     ).astype(np.float32)
+    # Backfill then roll, exactly as `StudentPolicy.observe` does and as
+    # `CircularBuffer` does on the push after a reset.
+    if first:
+      hist[:] = frames[:, None, :]
+      first = False
+    else:
+      hist[:, :-1] = hist[:, 1:]
+      hist[:, -1] = frames
+    mine = np.stack([stack_history(hist[i]) for i in range(N)])
     obs_diff.append(np.abs(mine - student).max())
 
     # 2. Does the ONNX reproduce the torch student on the env's own obs?
@@ -132,9 +177,9 @@ def main() -> int:
     # so name the term rather than just failing.
     per = np.abs(mine - student).max(axis=0)
     w = int(per.argmax())
-    label = calib.JOINT_NAMES[w % 11] if w < 33 else "goal_height"
-    block = ("joint_pos", "joint_vel", "last_action")[w // 11] if w < 33 else ""
-    print(f"worst obs dim {w} ({block} {label}) by {per[w]:.3e}")
+    print(
+      f"worst obs dim {w} ({_name_dim(w, deployed.history_length)}) by {per[w]:.3e}"
+    )
   # float32 through two different runtimes; anything at 1e-3 is a real
   # difference in weights or preprocessing, not accumulated rounding.
   ok = ad.max() < 1e-3 and od.max() < 1e-4

@@ -32,3 +32,7 @@ assets/**/preview/
 slurm-*.out
 /joint7_vel*
 /_joint7_vel.py
+
+# Deployment recordings: `deploy/run.py --record` writes these at the repo
+# root, 2-18 MB each. They are bench data, not source.
+/*.npz

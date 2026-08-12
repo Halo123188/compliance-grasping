@@ -20,6 +20,21 @@ Omit `--gripper-port` to move the arm only. `run.py` re-runs the hand ramp
 immediately before its first inference regardless, so a skipped hand here is
 recovered; the arm is not, and `run.py --require-home` simply refuses.
 
+ARM FIRST, THEN THE HAND. The hand ramp is open-loop and timed -- no planner, no
+collision check, and no way to stop partway -- so it should happen with the hand
+in free space rather than wherever the last run left the arm parked. Homing the
+fingers means opening the jaw to 86.9 mm of pad separation, which sweeps each
+pad outward through whatever is beside it; down at the bench that is the foam,
+the cube, and anything else on it.
+
+The cost, which is real: the arm now traverses the workspace with the fingers
+wherever they were left, possibly closed on a cube. That is what the previous
+order was avoiding. It is the lesser risk -- the arm's move is planned and
+interpolated by the robot's own generator under MAX_VEL/MAX_ACC and refuses
+absurd deltas, while the finger ramp is none of those things -- but if the last
+run ended with the jaw closed on the cube, the arm now carries it up. Open the
+gripper with its own host CLI first when that matters.
+
 The arm goes through NRT_JOINT_POSITION, not the impedance mode `deploy/arm.py`
 runs the policy in: homing wants a stiff, planned, interpolated move to a known
 pose, which is exactly what the policy loop must NOT have. The robot's own
@@ -179,8 +194,20 @@ def _home(args, robot, hand, home, hand_home, flexivrdk) -> int:
       print("aborted")
       return 1
 
-  # Hand first. It is the small, quick move, and it puts the fingers in a known
-  # pose before the arm swings through the workspace rather than after.
+  # ARM FIRST. See the module docstring: the finger ramp is open-loop and
+  # uninterruptible, so it wants the hand up in free space, not down among
+  # whatever the last run left on the bench.
+  rc = _move_arm(robot, home, flexivrdk)
+  if rc != 0:
+    if hand is not None:
+      # Deliberately NOT homing the hand on a failed arm move. The reason to do
+      # the arm first is that the fingers should open in free space, and a move
+      # that faulted or timed out is precisely the case where we do not know
+      # where the hand ended up. `run.py` re-ramps before its first inference
+      # anyway, and `--require-home` will refuse this pose regardless.
+      print("[hand] left as it was: the arm did not reach home.")
+    return rc
+
   if hand is not None:
     print(f"\n[hand] ramping to the policy home over {HAND_RAMP_S:.1f}s")
     qh = hand.ramp_to(hand_home, secs=HAND_RAMP_S)
@@ -192,7 +219,15 @@ def _home(args, robot, hand, home, hand_home, flexivrdk) -> int:
         "from home. The sim resets every joint within +-1.7 deg of it, so the "
         "policy has not seen a start this far out."
       )
+  return 0
 
+
+def _move_arm(robot, home, flexivrdk) -> int:
+  """Drive the seven arm joints to `home` and wait for arrival.
+
+  NRT_JOINT_POSITION, so the robot's own generator interpolates from wherever
+  the arm is under MAX_VEL/MAX_ACC -- the move is planned, unlike the hand's.
+  """
   robot.SwitchMode(flexivrdk.Mode.NRT_JOINT_POSITION)
   period = 1.0 / SEND_HZ
   deadline = time.time() + TIMEOUT_S

@@ -8,6 +8,19 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- ``deploy/`` now runs history-stacked students. The observation width is read
+  off the ONNX at load, so a checkpoint whose ``student`` group sets
+  ``history_length`` deploys with no flag to set, and feeding it a single frame
+  raises instead of running. The stacking is TERM-MAJOR -- each term's own
+  history is contiguous and the terms follow one another -- which is what
+  mjlab's group-level ``history_length`` builds, since it is applied per term.
+  Four whole observations laid end to end is the same number of floats in the
+  wrong order and nothing downstream can detect it; on a moving sequence the
+  frame-major reading takes this checkpoint's ``max|a|`` from 0.42 to 301. The
+  history is backfilled from the first frame at reset rather than filled over
+  the first four steps, matching ``CircularBuffer``'s first post-reset push.
+  ``scripts/wide_onnx_parity.py`` checks the assembled vector against the env's
+  own group at either width.
 - Added ``reduce="max"`` to ``MetricsTermCfg`` for reporting episode-peak values
   (e.g. peak power, peak contact force) without needing stateful wrapper classes.
 - Added ``BuiltinDcMotorActuator``, a native MuJoCo ``<dcmotor>`` wrapper.
@@ -116,6 +129,20 @@ Added
   raw action, commanded target and depth frame to an npz and writes it on the
   way out, including after a ``--max-jump`` abort — the aborting step's
   observation is in the file, since that is the one worth looking at.
+- Added ``scripts/measure_depth_holes.py``, which measures the D435's missing
+  returns against a rendered scene well enough to model them: how much is
+  missing and where, which side of a silhouette the occlusion shadow falls on,
+  whether its width matches ``f*B*(1/z_fg - 1/z_bg)``, whether a 3x3 median
+  removes it, and how blotchy it is. Measured over a nine-pose sweep: at the
+  working pose 7.4% of the frame is missing (14.7% of the top third); the claw
+  blanks 5-23% of its own silhouette and the fraction swings 4x with viewing
+  angle, which is what a specular surface does; the shadow is on the image-LEFT
+  of an occluder with 10x the hole density of the right side and stays above
+  85% out to 8 px; the observed width implies a 50 +- 6 mm stereo baseline,
+  i.e. the D435's nominal one recovered from the image; a 3x3 median removes
+  only 9% of it; and 93% of missing pixels sit in blobs of 16 px or more. The
+  training env models none of this -- ``patch_prob`` drops 8x8 blocks at random
+  positions, resampled every frame -- which is why the numbers are here.
 - Added ``scripts/sim_depth.py``, and fixed a 1.325x horizontal magnification in
   every sim-vs-real depth comparison. ``mujoco_warp`` crops a calibrated camera
   to the render's aspect (``render_util.py`` shrinks whichever sensor dimension
@@ -231,10 +258,51 @@ Added
   tolerance, i.e. a confident report of a camera fault that is not there. The
   default is unchanged (foam on, the bench the policy was trained against);
   pass ``-0.015`` for the bare table.
+- Added ``calib.RATE_LIMIT`` and ``calib.EMA_TAU``, the deployment half of the
+  training env's ``SmoothedJointPositionAction``. ``StudentPolicy`` now keeps the
+  published command as state and bounds how fast it may move, seeded from the
+  measured joints at ``reset()`` exactly as the sim seeds from the post-reset
+  pose. Both default to the values the ``2026-08-11`` camera-only student trained
+  under (1.0 rad/s on joints 1–6, 1.5 on the wrist, 3.0 on the fingers); set
+  ``RATE_LIMIT = None`` for a checkpoint trained without the term. Nothing can
+  check this pairing for you — the ONNX metadata does not carry the action term
+  — so ``run.py`` prints the limit at startup and reports, at the end of a live
+  run, how far past it the policy was asking, which is what a mismatch looks
+  like.
+- Added ``deploy/calibrate_finger_scale.py``, which measures the finger joints'
+  counts-per-radian on the bench instead of assuming it. ``calib.COUNTS_PER_RAD``
+  was 651.9 = 4096/2pi, i.e. the assumption that the joint turns 1:1 with the
+  motor shaft; measured against the jaw's outside width it is **1028 ± 9**, a
+  1.58:1 linkage. Under the old value a commanded finger angle reached only 63%
+  of itself while the encoder read back 58% high, both making the claw narrower
+  than the policy believed: at the home pose it held a 64.2 mm jaw where the
+  policy thought it had 71.8, and a 50 mm cube presents 70.7 mm across its
+  diagonal, so for 55% of the trained (full-circle) yaws the cube could not enter
+  the jaw at all. Hardware grasp rate went from 2/20 to 3/4 of the runs that ran
+  past the approach. ``COUNTS_AT_ZERO_RAD`` stays 0 and is now confirmed rather
+  than assumed: ``outer width - inner gap`` measures exactly twice one finger's
+  thickness, which only holds when the fingers are parallel.
+- Added ``deploy/run.py --max-action``, aborting on a raw network output beyond
+  ``calib.MAX_ABS_ACTION`` (default 15; trained actions run to about |5| and the
+  observed blow-up was |600|). Under a slew limit this is the only guard that
+  sees such a step in time: the limiter publishes at most 20 mrad of new arm
+  motion per control step, so a |600| action and a |3| action produce the same
+  first command and ``--max-jump``, which watches tracking error, only diverges
+  several steps later. ``StudentPolicy`` also clamps the published target to
+  ``calib.JOINT_LIMITS``, so a large action cannot command past a hard stop.
 
 Changed
 ^^^^^^^
 
+- ``deploy.home_arm`` now moves the ARM first and ramps the fingers afterwards.
+  The finger ramp is open-loop, timed and uninterruptible -- no planner, no
+  collision check -- so it belongs where the hand is in free space rather than
+  wherever the previous run parked the arm; homing the jaw opens it to 86.9 mm
+  of pad separation, sweeping each pad outward through whatever is beside it.
+  The hand is left untouched when the arm fails to reach home, since that is
+  exactly the case where its pose is unknown. The trade is that the arm now
+  traverses with the fingers as the last run left them, so open the gripper
+  first if it ended holding the cube.
 - Bumped ``rsl-rl-lib`` from 5.2.0 to 5.4.0.
 - Curriculum-mode terrain difficulty is now deterministic across rows
   and reaches the configured ``difficulty_range`` endpoints
@@ -253,6 +321,11 @@ Changed
 Fixed
 ^^^^^
 
+- Fixed ``deploy/hand.py``'s gripper checkout path, which was one machine's
+  absolute ``/home/yiboc/gripper/firmware/host``. It is now derived from this
+  repo's own location, so any host with the two repos side by side works
+  unconfigured, and ``$GRIPPER_HOST_DIR`` still overrides. The old default
+  failed at ``home_arm``, i.e. after you had already walked to the robot.
 - Fixed the wide-claw ``scene_cam`` extrinsic, which put the camera 19.9 mm to
   the image-left of where it actually sits, so the gripper landed in a visibly
   different place in a sim render than in the live D435 frame. The CAD chain was

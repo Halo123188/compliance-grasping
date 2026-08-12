@@ -18,6 +18,9 @@ divide rather than clamped up to the MIN floor.
 
 from __future__ import annotations
 
+import threading
+import time
+
 import numpy as np
 
 from . import calib
@@ -67,21 +70,101 @@ def centre_crop_resize(depth_m: np.ndarray) -> np.ndarray:
 
 
 class RealSenseDepth:
-  """The D435 in exactly the profile the policy expects. Requires pyrealsense2."""
+  """The D435 in exactly the profile the policy expects. Requires pyrealsense2.
 
-  def __init__(self, fps: int = 30):
+  Two things here are control-loop parameters wearing a camera's clothes, and
+  both were set by a measurement rather than a preference.
+
+  THE FRAME RATE. `wait_for_frames()` blocks until the sensor has a new frame,
+  so streaming at 30 fps puts a 33.3 ms floor under a loop whose whole budget is
+  20 ms. Measured on the bench at 30 fps: 44 ms per step, i.e. 23 Hz against the
+  50 Hz the policy was trained at, with EVERY step late. The 848x480 depth
+  profile runs at up to 90 fps and the resolution is what the trained field of
+  view depends on -- so when this will not start, change the RATE, never the
+  resolution.
+
+  AND THE THREAD. Even at 90 fps a blocking read couples the loop to the
+  sensor's phase: finish 1 ms after a frame boundary and you wait a whole frame
+  period for the next one, so the loop aliases down to a divisor of the frame
+  rate instead of running at its own. The reader thread keeps the most recent
+  frame in hand and `read()` returns it without blocking. The cost is that a
+  frame can be up to one frame period old -- 11 ms at 90 fps, against the 20 ms
+  the observation is fresh for anyway -- and `repeats` counts how often the same
+  frame was handed out twice, so the cost is measured rather than assumed.
+  """
+
+  def __init__(
+    self,
+    fps: int = 90,
+    threaded: bool = True,
+    first_frame_s: float = 5.0,
+    preset: str | None = None,
+  ):
     import pyrealsense2 as rs  # local: the cluster has no camera and no driver
 
     self._rs = rs
     w, h = calib.D435_STREAM_WH
+    self.fps = fps
     self.pipeline = rs.pipeline()
     cfg = rs.config()
     cfg.enable_stream(rs.stream.depth, w, h, rs.format.z16, fps)
-    profile = self.pipeline.start(cfg)
-    self.depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
+    try:
+      profile = self.pipeline.start(cfg)
+    except RuntimeError as exc:
+      raise RuntimeError(
+        f"could not start the D435 depth stream at {w}x{h} @ {fps} fps: {exc}\n"
+        "The RESOLUTION is what the student's field of view comes from and is "
+        "not negotiable; the rate is. Try --camera-fps 60, then 30 -- but 30 "
+        "cannot sustain the 50 Hz control loop, so treat it as a diagnosis, "
+        "not a fix."
+      ) from exc
+    sensor = profile.get_device().first_depth_sensor()
+    self.depth_scale = sensor.get_depth_scale()
+    if preset is not None:
+      self.set_preset(sensor, preset)
 
-  def read(self) -> np.ndarray:
-    """Blocking. -> (1,120,160) float32 observation, ready for the policy."""
+    self._lock = threading.Lock()
+    self._latest: np.ndarray | None = None
+    self._seq = 0  # frames the sensor has delivered
+    self._served = -1  # _seq of the frame the last read() handed out
+    self.repeats = 0  # times read() handed out a frame it had already served
+    self._error: BaseException | None = None
+    self._stop = threading.Event()
+    self._thread: threading.Thread | None = None
+    if threaded:
+      self._thread = threading.Thread(target=self._pump, name="d435", daemon=True)
+      self._thread.start()
+      self._await_first_frame(first_frame_s)
+
+  # The preset decides how aggressively the stereo matcher rejects a pixel it is
+  # unsure of, i.e. how much of the frame comes back as 0 = no return. That is
+  # not a picture-quality setting here: measured on run5, the pixels the sensor
+  # blanks and the renderer fills are 2.4% of the frame, and patching just those
+  # took the policy's command from 0.205 rad away from its sim-frame behaviour
+  # to 0.085. HIGH_ACCURACY blanks the most, HIGH_DENSITY the least.
+  PRESETS = {
+    "custom": 0,
+    "default": 1,
+    "hand": 2,
+    "high_accuracy": 3,
+    "high_density": 4,
+    "medium_density": 5,
+  }
+
+  def set_preset(self, sensor, name: str) -> None:
+    """Apply a D400 visual preset by name. Raises on an unknown name."""
+    if name not in self.PRESETS:
+      raise ValueError(f"unknown preset {name!r}; choose from {sorted(self.PRESETS)}")
+    opt = self._rs.option.visual_preset
+    if not sensor.supports(opt):
+      print(f"[cam] WARNING: this device has no visual_preset option; {name} ignored")
+      return
+    sensor.set_option(opt, float(self.PRESETS[name]))
+    got = int(sensor.get_option(opt))
+    print(f"[cam] visual preset -> {name} (value {got})")
+
+  def _grab(self) -> np.ndarray:
+    """One blocking sensor read -> the (1,120,160) observation."""
     frames = self.pipeline.wait_for_frames()
     frame = frames.get_depth_frame()
     if not frame:
@@ -89,5 +172,57 @@ class RealSenseDepth:
     raw = np.asanyarray(frame.get_data()).astype(np.float32) * self.depth_scale
     return to_observation(centre_crop_resize(raw))
 
+  def _pump(self) -> None:
+    while not self._stop.is_set():
+      try:
+        obs = self._grab()
+      except BaseException as exc:  # noqa: BLE001 -- re-raised in read()
+        # close() stops the pipeline out from under a blocked wait_for_frames,
+        # which raises here. That is the shutdown path, not a failure, and
+        # recording it would make every clean exit look like a camera fault.
+        if not self._stop.is_set():
+          with self._lock:
+            self._error = exc
+        return
+      with self._lock:
+        self._latest = obs
+        self._seq += 1
+
+  def _await_first_frame(self, timeout_s: float) -> None:
+    deadline = time.perf_counter() + timeout_s
+    while time.perf_counter() < deadline:
+      with self._lock:
+        if self._error is not None:
+          raise RuntimeError("the D435 reader thread died") from self._error
+        if self._latest is not None:
+          return
+      time.sleep(0.005)
+    raise RuntimeError(
+      f"no depth frame within {timeout_s:.1f}s of starting the stream. "
+      "The pipeline started, so the profile is valid and the sensor is not "
+      "delivering -- check the USB3 link before anything else."
+    )
+
+  def read(self) -> np.ndarray:
+    """-> (1,120,160) float32 observation. Non-blocking once threaded."""
+    if self._thread is None:
+      return self._grab()
+    with self._lock:
+      if self._error is not None:
+        raise RuntimeError("the D435 reader thread died") from self._error
+      if self._latest is None:
+        raise RuntimeError("no depth frame yet")
+      if self._seq == self._served:
+        self.repeats += 1
+      self._served = self._seq
+      return self._latest
+
   def close(self) -> None:
+    # Stop the thread BEFORE the pipeline. The other order tears down the
+    # pipeline under a blocked wait_for_frames, which is a use-after-free in the
+    # SDK rather than an exception. If the join times out, stopping anyway is
+    # still the least bad thing available on the way out.
+    self._stop.set()
+    if self._thread is not None:
+      self._thread.join(timeout=1.0)
     self.pipeline.stop()

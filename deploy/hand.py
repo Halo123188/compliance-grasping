@@ -10,8 +10,9 @@ WHAT THIS MODULE CANNOT KNOW. The sim and the hardware agree on the topology
 
   sim   left_1 = +0.2746 rad is OPEN (86.9 mm of pad separation), -0.0754 rad is
         closed (40 mm); the distal joints sit at 0 and the policy curls them.
-  real  homing offset was zeroed at each motor's mechanical OPEN limit, so 0
-        counts is fully open on all four, and the closing direction is per-motor
+  real  homing offset is zeroed at the STRAIGHT / NEUTRAL pose, mid-travel and
+        deliberately not a mechanical limit, so 0 counts is roughly halfway
+        between open and closed on all four; the closing direction is per-finger
         mixed sign because a pinch is a mirror-image motion.
 
 There is no shared zero, no shared sign and no shared scale, and neither repo
@@ -22,7 +23,9 @@ driving a finger into the frame on a guessed sign.
 
 from __future__ import annotations
 
+import os
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -31,14 +34,27 @@ from . import calib
 
 # The gripper repo is a sibling checkout, not a package. Point at it explicitly
 # so the import failure names the actual problem.
-GRIPPER_HOST_DIR = Path("/home/yiboc/gripper/firmware/host")
+#
+# Derived from THIS file's location rather than hardcoded: the default used to
+# be one machine's absolute path (`/home/yiboc/...`), which is a
+# FileNotFoundError on every host whose checkout lives anywhere else -- and it
+# fails at `home_arm`, i.e. after you have already walked to the robot. Any
+# layout that keeps the two repos side by side now works unconfigured, and
+# $GRIPPER_HOST_DIR still overrides for one that does not.
+GRIPPER_HOST_DIR = Path(
+  os.environ.get(
+    "GRIPPER_HOST_DIR",
+    Path(__file__).resolve().parents[2] / "gripper" / "firmware" / "host",
+  )
+)
 
 
 def _import_link():
   if not (GRIPPER_HOST_DIR / "policy_link.py").exists():
     raise FileNotFoundError(
-      f"policy_link.py not found under {GRIPPER_HOST_DIR}. Set "
-      "deploy.hand.GRIPPER_HOST_DIR to your gripper checkout."
+      f"policy_link.py not found under {GRIPPER_HOST_DIR}. That default assumes "
+      "the gripper repo sits beside this one; point $GRIPPER_HOST_DIR at your "
+      "checkout's firmware/host if it does not."
     )
   sys.path.insert(0, str(GRIPPER_HOST_DIR))
   from policy_link import GripperLink  # type: ignore[import-not-found]
@@ -68,6 +84,16 @@ class Hand:
         "hand calibration missing: calib.COUNTS_PER_RAD / COUNTS_AT_ZERO_RAD are "
         "None. Run deploy/calibrate_hand.py and paste its output into calib.py. "
         "Refusing to command counts from a guessed sign."
+      )
+    if getattr(calib, "HAND_CALIB_IS_PROVISIONAL", False):
+      # Loud at every arm, because the failure it causes is quiet: a wrong scale
+      # produces grasps that are simply the wrong width, which reads as a bad
+      # policy rather than a bad constant.
+      print(
+        "[hand] WARNING: running on a PROVISIONAL calibration. The offset and "
+        "signs are derived, but COUNTS_PER_RAD is the 1:1 guess 4096/2pi. Finger "
+        "angles -- and so grasp width -- are off by however wrong that is. Do "
+        "not diagnose a failed grasp before finishing calib.py's hand block."
       )
     self.k = np.asarray(calib.COUNTS_PER_RAD, dtype=np.float64)
     self.b = np.asarray(calib.COUNTS_AT_ZERO_RAD, dtype=np.float64)
@@ -116,6 +142,29 @@ class Hand:
     if obs.get("fault"):
       raise RuntimeError(f"gripper fault {obs['fault']} (see PROTOCOL.md Fault enum)")
     return obs
+
+  def ramp_to(self, target: np.ndarray, secs: float = 1.5) -> np.ndarray:
+    """Walk the fingers to `target` (sim radians) over `secs`, and report where
+    they landed.
+
+    Ramped rather than commanded in one step. The servo would otherwise chase
+    the whole error at the full current cap, and the pose this is usually called
+    with -- the policy's default -- is about 0.27 rad from the gripper's homing
+    zero, which is a long way to lunge.
+
+    Used by `home_arm.py` before a run and by `run.py` immediately before the
+    first inference: the policy's first action is computed from the MEASURED
+    state, so a hand sitting anywhere but its default makes that first command a
+    large step.
+    """
+    q0, _ = self.read()
+    target = np.asarray(target, dtype=np.float64)
+    n = max(1, int(secs * calib.CONTROL_HZ))
+    for i in range(1, n + 1):
+      self.step(q0 + (target - q0) * (i / n))
+      time.sleep(1.0 / calib.CONTROL_HZ)
+    q1, _ = self.read()
+    return q1
 
   def read(self) -> tuple[np.ndarray, np.ndarray]:
     """Read-only poll -> (joint_pos rad, joint_vel rad/s), protocol motor order.
