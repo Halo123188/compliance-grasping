@@ -163,8 +163,25 @@ ignore = ["B011"]
 pythonVersion = "3.10"
 venvPath = "."
 venv = ".venv"
-ignore = ["./typings", "./src/mjlab/utils/lab_api", "./docs"]
+ignore = [
+  "./typings",
+  "./src/mjlab/utils/lab_api",
+  "./docs",
+  # Vendored robot asset trees and the one-off prototyping scripts shipped
+  # beside them, plus the standalone scene bundles. Excluded from ruff for the
+  # same reason (see [tool.ruff].exclude): none of it is code this project
+  # maintains, and type-checking it churns thousands of vendored lines.
+  "./assets",
+  "./scenes",
+  # One-off diagnostics, run by hand against a checkpoint. They have never been
+  # under this gate; `ty` does not cover them either (see [tool.ty.src]).
+  "./scripts",
+]
 stubPath = "typings"
+# The robot SDKs are only installed on the machine wired to the hardware -- the
+# cluster has neither, which is why every use of them sits behind a local
+# import. Their absence is the expected state here, not a finding.
+reportMissingImports = "none"
 
 [tool.ty.environment]
 extra-paths = ["typings"]
@@ -178,3 +195,10 @@ markers = [
   "slow: marks tests as slow (deselect with '-m \"not slow\"')",
 ]
 addopts = "--strict-markers"
+# `deploy/` is a package in the repo root, not an installed one, so it is only
+# importable when the root is on sys.path. `python -m pytest` puts it there and
+# the `pytest` entry point does not -- which meant the command this project
+# documents (`make test`, i.e. `uv run pytest`) failed at COLLECTION on the five
+# deploy/sim-depth test modules while `python -m pytest` passed. Setting it here
+# makes both spellings agree.
+pythonpath = ["."]
