@@ -33,9 +33,12 @@ env = ManagerBasedRlEnv(cfg=cfg, device=DEV, render_mode=None)
 a = load_rl_cfg(TASK)
 wrapped = RslRlVecEnvWrapper(env, clip_actions=a.clip_actions)
 runner = load_runner_cls(TASK)(wrapped, asdict(a), device=DEV)
-runner.load(CKPT, load_cfg={"teacher": True, "iteration": False}, map_location=DEV)
+# TASK is the TEACHER's own task id, so the runner is a PPO OnPolicyRunner and
+# the network to roll out is its actor. `runner.alg.teacher` only exists on the
+# DistillationRunner -- reaching for it here is what made the first run crash.
+runner.load(CKPT, load_cfg={"actor": True, "iteration": False}, map_location=DEV)
 runner.alg.eval_mode()
-teacher = runner.alg.teacher
+teacher = runner.get_inference_policy(device=DEV)
 
 torch.manual_seed(0)
 obs = wrapped.reset()[0]

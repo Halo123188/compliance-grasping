@@ -55,6 +55,7 @@ from mjlab.tasks.manipulation.config.flexiv_two_finger_wide.scene import (
   WORK_SURFACE_Z,
 )
 from mjlab.tasks.registry import load_env_cfg
+from mjlab.utils.lab_api import math as math_utils
 
 TASK = sys.argv[1] if len(sys.argv) > 1 else "Mjlab-Grasp-TwoFingerWide-Flexiv"
 N, DEV = 64, "cuda:0"
@@ -85,13 +86,28 @@ def check_names() -> None:
   ok("scene_cam" in cams, "camera 'scene_cam' exists")
   for j in (*ARM_JOINTS, *FINGER_JOINTS):
     ok(j in joints, f"joint {j!r} exists")
-  for label, pat, want in (
-    ("FINGERTIP_GEOMS", FINGERTIP_GEOMS, 8),
-    ("LEFT_FINGERTIP_GEOMS", LEFT_FINGERTIP_GEOMS, 4),
-    ("RIGHT_FINGERTIP_GEOMS", RIGHT_FINGERTIP_GEOMS, 4),
-  ):
-    hits = [g for g in geoms if g and re.fullmatch(pat, g)]
-    ok(len(hits) == want, f"{label} {pat!r} matches {len(hits)} geoms (want {want})")
+  # The COUNT is not the invariant -- it is a property of the collision
+  # representation, and hardcoding the fitted boxes' 4-per-link made both of
+  # these fail under CG_HAND_COLLISION=coacd_t0.2 for no reason (right_2 is 3
+  # hulls there, not 4). What has to hold is that each side resolves to at least
+  # one geom and that the combined pattern is exactly their union: a pattern
+  # matching NOTHING is the silent failure this check exists for, since a
+  # contact sensor then reports no contact rather than raising.
+  hit = {
+    label: [g for g in geoms if g and re.fullmatch(pat, g)]
+    for label, pat in (
+      ("both", FINGERTIP_GEOMS),
+      ("left", LEFT_FINGERTIP_GEOMS),
+      ("right", RIGHT_FINGERTIP_GEOMS),
+    )
+  }
+  for side in ("left", "right"):
+    ok(len(hit[side]) >= 1, f"{side} fingertip pattern matches {len(hit[side])} geoms")
+  ok(
+    set(hit["both"]) == set(hit["left"]) | set(hit["right"]),
+    f"FINGERTIP_GEOMS is exactly left+right ({len(hit['both'])} geoms:"
+    f" {len(hit['left'])} left, {len(hit['right'])} right)",
+  )
 
   # The spawn box has to sit on the bench with the cube fully supported.
   x0, x1 = CUBE_REGION["x"]
@@ -128,6 +144,57 @@ def action_for(env, targets: dict[str, float]) -> torch.Tensor:
     if n in targets:
       tgt[:, i] = targets[n]
   return ((tgt - default) / scale).clamp(-1.0, 1.0)
+
+
+def _grip_geometry(env) -> None:
+  """WHERE on the cube the scripted grip lands, split into its two directions.
+
+  A reward that asks for a pose the hardware cannot reach behaves exactly like
+  a reward that is wired wrong: it reads a constant and never moves. This is the
+  reachability reference for `contact_face_centring` -- the scripted grip is the
+  best pose this claw is known to achieve, so whatever it scores here is the
+  practical floor, and a kernel has to be sized against THAT rather than against
+  a geometric ideal of zero.
+
+  Printed as the two independent parts, because they are not equally reachable:
+  the vertical one is bounded by the claw itself (the gripping face sits 23-33 mm
+  above the fingertip, so on a 50 mm cube the grip "lands 9.3 mm high" against a
+  rigid surface), while the horizontal one is free -- nothing stops the jaw
+  landing on the middle of a face except squaring up to it.
+  """
+  try:
+    sensors = {s: env.scene[f"{s}_cube_pose"] for s in ("left", "right")}
+  except Exception:
+    return  # arm without the face gate; these sensors only exist with it
+  obj = env.scene["cube"]
+  print("    contact, in the cube's frame:")
+  for side, sensor in sensors.items():
+    data = sensor.data
+    if data.force is None or data.pos is None:
+      continue
+    mag = torch.norm(data.force, dim=-1)
+    idx = mag.argmax(dim=1)
+    best = mag.gather(1, idx.view(-1, 1)).squeeze(1)
+    # PER ENV, not on the batch mean. An env whose finger is not touching
+    # reports a stale slot position, and one of those among 64 is enough to drag
+    # the average past the cube's own half-edge -- which is exactly how this
+    # first printed "44.8 mm from the centre-line" on a 25 mm half-cube.
+    live = best > 0.05
+    if not bool(live.any()):
+      print(f"      {side:<5}  no contact")
+      continue
+    pos = data.pos.gather(1, idx.view(-1, 1, 1).expand(-1, 1, 3)).squeeze(1)
+    rel = pos - obj.data.root_link_pos_w
+    local = math_utils.quat_apply_inverse(obj.data.root_link_quat_w, rel).abs()
+    face = local.argmax(dim=-1, keepdim=True)
+    in_face = local.scatter(-1, face, 0.0)[live]
+    vert = float(in_face[:, 2].median()) * 1e3
+    horiz = float(in_face[:, :2].amax(dim=-1).median()) * 1e3
+    print(
+      f"      {side:<5}  {horiz:5.1f} mm from the face's centre-line,"
+      f" {vert:5.1f} mm above its middle"
+      f"   ({int(live.sum())}/{len(live)} envs touching)"
+    )
 
 
 def reward_snapshot(env, label: str) -> dict[str, float]:
@@ -341,6 +408,7 @@ def main() -> None:
     f"    pad separation {sep_grip:.1f} mm   "
     f"cube rise {float(cube_h().mean()) * 1e3:+.1f} mm"
   )
+  _grip_geometry(env)
 
   # --- press: does the surface-contact penalty actually fire? -------------
   # The one pattern that had to change and could not be checked by name: the
