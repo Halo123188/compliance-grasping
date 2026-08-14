@@ -53,7 +53,12 @@ def test_the_default_floor_is_below_anything_sim_does():
 def test_it_stops_the_crash_with_clearance_left():
   q = _load("run3.npz")
   step, h, descent = replay(q)
+  # `replay` returns (None, None, None) when the guard never fires, so h and
+  # descent are only numbers once step is. Asserting all three keeps the later
+  # arithmetic honest instead of raising a TypeError that reads like a bug in
+  # the guard.
   assert step is not None, "the guard must fire on the run that hit the foam"
+  assert h is not None and descent is not None
   assert h - FOAM > 0.050, f"only {1000 * (h - FOAM):.0f} mm of clearance"
   assert descent > 0.3, "it should fire while genuinely diving"
   # And well before the breach, which was at step 124 of 127.

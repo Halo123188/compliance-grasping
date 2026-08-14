@@ -93,6 +93,14 @@ def main() -> int:
     )
     return 1
 
+  # Seed the command smoother from where the joints ACTUALLY are. Harmless when
+  # calib.RATE_LIMIT/EMA_TAU are None; when they are set, seeding from the
+  # nominal home instead would make the limiter ramp across the home check's
+  # tolerance at the start of every trial.
+  q_hand_0 = home[calib.HAND_SLICE] if hand is None else hand.read()[0]
+  policy.reset(np.concatenate([q_arm, q_hand_0]))
+
+  camera = None
   if args.dry_run:
     depth_source = _synthetic_depth
   else:
@@ -162,7 +170,7 @@ def main() -> int:
     arm.stop()
     if hand is not None:
       hand.close()
-    if not args.dry_run:
+    if camera is not None:
       camera.close()
 
   print(f"done. {late} late steps of {args.steps}.")

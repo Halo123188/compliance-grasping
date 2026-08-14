@@ -67,9 +67,17 @@ def centre_crop_resize(depth_m: np.ndarray) -> np.ndarray:
 
 
 class RealSenseDepth:
-  """The D435 in exactly the profile the policy expects. Requires pyrealsense2."""
+  """The D435 in exactly the profile the policy expects. Requires pyrealsense2.
 
-  def __init__(self, fps: int = 30):
+  ``preset`` is a D400 visual preset name (``high_density``, ``high_accuracy``,
+  ``default``, ...). It is worth exposing rather than leaving at the factory
+  default because it trades depth confidence against how many pixels come back
+  BLANK, and a blank pixel is not a neutral input here: the observation writes
+  invalid depth as exactly 0.0, which the policy reads as "surface at the
+  camera". ``high_density`` blanks the fewest, ``high_accuracy`` the most.
+  """
+
+  def __init__(self, fps: int = 30, preset: str | None = None):
     import pyrealsense2 as rs  # local: the cluster has no camera and no driver
 
     self._rs = rs
@@ -78,7 +86,25 @@ class RealSenseDepth:
     cfg = rs.config()
     cfg.enable_stream(rs.stream.depth, w, h, rs.format.z16, fps)
     profile = self.pipeline.start(cfg)
-    self.depth_scale = profile.get_device().first_depth_sensor().get_depth_scale()
+    sensor = profile.get_device().first_depth_sensor()
+    self.depth_scale = sensor.get_depth_scale()
+    if preset is not None:
+      self._apply_preset(sensor, preset)
+
+  def _apply_preset(self, sensor, preset: str) -> None:
+    """Set the D400 visual preset by NAME, failing loudly on a bad one.
+
+    The enum is device-specific, so the names are read off the driver rather
+    than hardcoded -- a typo that silently left the camera on its default would
+    be invisible in the depth image and would only show up as a policy that
+    behaves differently from the one that was tuned.
+    """
+    rs = self._rs
+    presets = {p.name.lower(): p for p in rs.rs400_visual_preset.__members__.values()}
+    key = preset.lower()
+    if key not in presets:
+      raise ValueError(f"unknown D400 visual preset {preset!r}; have {sorted(presets)}")
+    sensor.set_option(rs.option.visual_preset, int(presets[key]))
 
   def read(self) -> np.ndarray:
     """Blocking. -> (1,120,160) float32 observation, ready for the policy."""

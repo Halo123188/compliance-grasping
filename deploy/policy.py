@@ -42,6 +42,19 @@ class StudentPolicy:
     self.lo, self.hi = limits[:, 0], limits[:, 1]
     self.last_action = np.zeros(11, dtype=np.float32)
 
+    # Command smoothing, mirroring the training env's action term. `_cmd` is the
+    # target actually published, which is NOT the target the network asked for
+    # once either of these is on -- see calib.RATE_LIMIT for the rule tying
+    # these to the checkpoint.
+    self.dt = 1.0 / calib.CONTROL_HZ
+    self.rate_limit = (
+      None if calib.RATE_LIMIT is None else np.asarray(calib.RATE_LIMIT, np.float32)
+    )
+    self.ema_alpha = (
+      0.0 if not calib.EMA_TAU else float(np.exp(-self.dt / calib.EMA_TAU))
+    )
+    self._cmd = self.default.copy()
+
   def _check_metadata(self, onnx_path: str | Path) -> None:
     """Fail loudly if the checkpoint disagrees with calib.py.
 
@@ -82,9 +95,19 @@ class StudentPolicy:
     if list(shapes.get("camera", []))[1:] != [1, *calib.DEPTH_HW]:
       raise ValueError(f"expected camera (1,1,120,160), got {shapes}")
 
-  def reset(self) -> None:
-    """Zero the action feedback. Sim does this on every episode reset."""
+  def reset(self, joint_pos: np.ndarray | None = None) -> None:
+    """Zero the action feedback. Sim does this on every episode reset.
+
+    Pass the MEASURED joint angles when the command smoother is on. The sim
+    seeds its command from the joints as they actually are after the reset
+    events, and seeding from the nominal home pose instead would open a gap the
+    limiter then ramps across at the start of every trial -- a scripted move
+    nothing asked for.
+    """
     self.last_action[:] = 0.0
+    self._cmd = (
+      self.default.copy() if joint_pos is None else joint_pos.astype(np.float32).copy()
+    )
 
   def observe(
     self,
@@ -114,9 +137,23 @@ class StudentPolicy:
         "obs": obs.reshape(1, 34).astype(np.float32),
         "camera": depth.reshape(1, 1, *calib.DEPTH_HW).astype(np.float32),
       },
-    )[0].reshape(11)
+    )
+    # `session.run` is typed as returning a union that includes SparseTensor and
+    # plain lists; the graph only ever produces a dense array here, and asarray
+    # makes that explicit rather than assuming it.
+    action = np.asarray(action[0]).reshape(11)
     self.last_action = action.astype(np.float32)
     target = self.default + self.scale * self.last_action
+
+    # Smooth BEFORE the joint-limit clamp, so the clamp stays the last thing
+    # between the command and the arm's hard stops.
+    if self.ema_alpha:
+      target = self.ema_alpha * self._cmd + (1.0 - self.ema_alpha) * target
+    if self.rate_limit is not None:
+      step = self.rate_limit * self.dt
+      target = self._cmd + np.clip(target - self._cmd, -step, step)
+    self._cmd = target.astype(np.float32)
+
     return np.clip(target, self.lo, self.hi)
 
   def step(

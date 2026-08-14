@@ -103,6 +103,49 @@ MAX_ABS_ACTION = 15.0
 # so 50 Hz sits comfortably inside both.
 CONTROL_HZ = 50.0
 
+# Command slew limit, rad/s, in JOINT_NAMES order -- the deployment half of the
+# training env's `SmoothedJointPositionAction`. None means no limiting, which is
+# what every checkpoint trained before the speed work expects.
+#
+# THIS MUST MATCH THE CHECKPOINT'S OWN TRAINING SETTING and nothing checks it
+# for you: the ONNX metadata carries default_joint_pos and action_scale but not
+# this. Set it from the task id the checkpoint came from:
+#
+#   ...-Success-Dr, -Slow          None      (no limiter in the action term)
+#   ...-Success-Dr-Slew, -SlewCurr (1.0 x6, 1.5, 3.0 x4)   <- the value below
+#   ...-Success-Dr-SlewTight       (0.5 x6, 1.0, 2.0 x4)
+#
+# GETTING THIS WRONG IS NOT A DEGRADATION, IT IS A CRASH. A policy trained with
+# a limiter learns to lean on it: measured on the -SlewCurr teacher
+# (scripts/wide_speed_audit.py, job 61221) the target it ASKS for moves 16.7x
+# faster than the one the limiter publishes, with a peak request of 135 rad/s
+# against a 1.5 rad/s cap -- and -SlewTight asks for 292 rad/s. Publish that
+# unfiltered and the arm gets a full-speed command into the bench on the first
+# step. The reverse mistake is merely bad: limiting a policy trained without one
+# makes it lag its own plan.
+#
+# The sim integrates this at its 200 Hz physics step and the robot host at
+# CONTROL_HZ. Both bound the same rad/s, so the guarantee is identical; only the
+# fine shape of the ramp inside one control period differs.
+RATE_LIMIT: tuple[float, ...] | None = (
+  1.0,  # joint1
+  1.0,  # joint2
+  1.0,  # joint3
+  1.0,  # joint4
+  1.0,  # joint5
+  1.0,  # joint6
+  1.5,  # joint7, the wrist roll -- needs +-45 deg of travel before contact
+  3.0,  # left_1
+  3.0,  # left_2
+  3.0,  # right_1
+  3.0,  # right_2
+)
+
+# First-order low-pass time constant on the command, seconds, or None. The
+# deployment half of `SmoothedJointPositionAction`'s `ema_tau`; the ...-Ema arm
+# trains with 0.09. Same matching rule as RATE_LIMIT.
+EMA_TAU: float | None = None
+
 # Depth observation, exactly as `manipulation_mdp.camera_depth` builds it:
 #   clamp(metres, MIN, CUTOFF) / CUTOFF   -> float32 in [0, 1], shape (1,120,160)
 DEPTH_CUTOFF_M = 3.0
