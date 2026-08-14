@@ -154,7 +154,7 @@ WORK_SURFACE_BODIES = "table"
 FingerRange = tuple[tuple[float, float], tuple[float, float]]
 
 
-def _robot_cfg(finger_range: FingerRange | None) -> EntityCfg:
+def _robot_cfg(finger_range: FingerRange | None, collision: str) -> EntityCfg:
   """The arm + claw, optionally with the finger joints limited to real travel.
 
   The URDF ships +-1.6 rad on all four finger joints, which is far more than the
@@ -174,7 +174,7 @@ def _robot_cfg(finger_range: FingerRange | None) -> EntityCfg:
   `_apply_common`), which is the point -- these limits are a design constraint
   and pressing against them is intended behaviour, not a fault.
   """
-  cfg = get_robot_cfg()
+  cfg = get_robot_cfg(collision)
   if finger_range is None:
     return cfg
   prox, dist = finger_range
@@ -215,10 +215,38 @@ def _apply_common(
   free_wrist_penalties: bool = False,
   wrist_reset_range: float = 0.0,
   solve_wrist: bool = False,
+  rate_limit: dict[str, float] | None = None,
+  ema_tau: dict[str, float] | float | None = None,
+  incremental: bool = False,
+  rate_limit_stages: list[dict[str, float]] | None = None,
+  saturation_weight: float = 0.0,
+  saturation_ramp_iters: tuple[int, int] = (750, 1500),
+  observe_command: bool = False,
+  joint_vel_max: float = 0.5,
+  joint_vel_ramp_iters: tuple[int, int] = (500, 1000),
+  action_rate_weight: float = -0.01,
+  # Grasp-POSE gate; see the block that applies it. Kept at the END of this
+  # signature because the call below still passes the first dozen arguments
+  # POSITIONALLY -- inserting a parameter mid-list silently re-binds every
+  # positional after it, which is how `free_wrist_penalties` briefly became
+  # `face_gate`.
+  face_gate: float = 0.0,
+  face_std: float = 0.02,
+  face_on: tuple[str, ...] = ("touch", "grasp"),
+  face_lift_floor: float = 0.7,
+  face_z_free: float = 0.018,
+  face_z_std: float = 0.005,
+  collision: str = "boxes",
+  spawn_jitter: tuple[float, float] | None = None,
+  face_z_min: float = 0.0,
+  face_level_free: float = 0.0,
+  face_level_std: float = 0.0,
+  finger_scale: float = 0.35,
+  observe_object_size: bool = False,
 ) -> ManagerBasedRlEnvCfg:
   """Shared setup: robot + table + cube, 6-DOF IK + gripper action, success."""
   cfg.scene.entities = {
-    "robot": _robot_cfg(finger_range),
+    "robot": _robot_cfg(finger_range, collision),
     # One entity carrying the table slab, the four foam strips and the wall --
     # all static, all welded to the world, so MuJoCo filters every pair among
     # them and none of it enters the dynamics.
@@ -385,10 +413,31 @@ def _apply_common(
   action_scale = {
     r"joint[1-6]": 0.40,
     r"joint7": wrist_scale,
-    r"(left|right)_[12]_tf": 0.35,
+    r"(left|right)_[12]_tf": finger_scale,
   }
-  cfg.actions = {
-    "joint_pos": manipulation_mdp.WristAlignedJointPositionActionCfg(
+  #
+  # SPEED. Nothing above bounds how fast the arm moves, and the audit of the DR
+  # teacher (scripts/wide_speed_audit.py, run 60866) says what that costs: the
+  # whole task -- descend, close, lift 127 mm -- is done inside 0.6 s of a 20 s
+  # episode, at up to 24.6 rad/s of commanded joint rate and 2.27 m/s at the
+  # tool. `rate_limit` bounds the command's slew instead of charging for it;
+  # see SmoothedJointPositionActionCfg for why a penalty is structurally weak
+  # here (a 4.6%-duty burst diluted by a 95% stationary tail).
+  if rate_limit is not None or ema_tau is not None:
+    assert not solve_wrist, "the wrist solver is unbounded by construction"
+    action_cfg: JointPositionActionCfg = (
+      manipulation_mdp.SmoothedJointPositionActionCfg(
+        entity_name="robot",
+        actuator_names=(*ARM_JOINTS, *FINGER_JOINTS),
+        scale=action_scale,
+        use_default_offset=True,
+        rate_limit=rate_limit,
+        ema_tau=ema_tau,
+        incremental=incremental,
+      )
+    )
+  elif solve_wrist:
+    action_cfg = manipulation_mdp.WristAlignedJointPositionActionCfg(
       entity_name="robot",
       actuator_names=(*ARM_JOINTS, *FINGER_JOINTS),
       scale=action_scale,
@@ -396,14 +445,65 @@ def _apply_common(
       object_name="cube",
       pad_sites=PAD_SITES,
     )
-    if solve_wrist
-    else JointPositionActionCfg(
+  else:
+    action_cfg = JointPositionActionCfg(
       entity_name="robot",
       actuator_names=(*ARM_JOINTS, *FINGER_JOINTS),
       scale=action_scale,
       use_default_offset=True,
-    ),
-  }
+    )
+  cfg.actions = {"joint_pos": action_cfg}
+
+  if rate_limit_stages is not None:
+    assert rate_limit is not None, "a rate-limit schedule needs a rate limit"
+    cfg.curriculum["rate_limit_schedule"] = CurriculumTermCfg(
+      func=manipulation_mdp.action_rate_limit_curriculum,
+      params={"stages": rate_limit_stages},
+    )
+
+  # --- Stop the policy leaning on the limiter -------------------------------
+  # A slew cap bounds speed, not direction changes, and on its own it invites
+  # the policy to saturate it: past the cap only the SIGN of the request
+  # reaches the sim, magnitude stops receiving gradient, and the joint goes
+  # bang-bang. The SlewCurr teacher did exactly that (requests 16.7x the
+  # published rate, actions to 27.0, visible chatter in the student clips), so
+  # these two are the root-cause fixes, usable together or separately.
+  if saturation_weight:
+    assert rate_limit is not None, "a saturation penalty needs a rate limit"
+    cfg.rewards["action_saturation"] = RewardTermCfg(
+      func=manipulation_mdp.action_saturation_penalty,
+      weight=saturation_weight,
+      params={"action_name": "joint_pos"},
+    )
+    # Ramped for the same reason every other penalty here is: `grasp` reads
+    # 0.0000 until ~iteration 750, and saturating the limiter is exactly how a
+    # policy reaches the cube quickly enough to discover the grasp in the first
+    # place. Charging full price during that window is how joint7's action std
+    # got squeezed to 0.0083 rad. Start at a tenth, full price once the task
+    # exists.
+    sat_mid, sat_end = saturation_ramp_iters
+    cfg.curriculum["action_saturation_weight"] = CurriculumTermCfg(
+      func=manipulation_mdp.reward_curriculum,
+      params={
+        "reward_name": "action_saturation",
+        "stages": [
+          {"step": 0, "weight": saturation_weight * 0.1},
+          {"step": sat_mid * 24, "weight": saturation_weight * 0.5},
+          {"step": sat_end * 24, "weight": saturation_weight},
+        ],
+      },
+    )
+  if observe_command:
+    assert rate_limit is not None or ema_tau is not None, (
+      "there is no smoothed command to observe without a limiter"
+    )
+    cmd_obs = ObservationTermCfg(
+      func=manipulation_mdp.smoothed_action_command,
+      params={"action_name": "joint_pos"},
+      noise=Unoise(n_min=-0.01, n_max=0.01),
+    )
+    for group in ("actor", "critic"):
+      cfg.observations[group].terms["cmd_pos"] = cmd_obs
 
   # Extra solver headroom: the self-colliding finger hulls need more Newton /
   # line-search iterations to resolve cleanly and avoid contact blow-ups.
@@ -428,6 +528,17 @@ def _apply_common(
   )
   for group in ("actor", "critic"):
     cfg.observations[group].terms["cube_quat"] = cube_quat
+
+  # --- how big the object is, once one closing depth cannot serve every size --
+  # See `object_half_extent` for why this is required rather than nice to have.
+  if observe_object_size:
+    cube_size = ObservationTermCfg(
+      func=manipulation_mdp.object_half_extent,
+      params={"object_name": "cube"},
+      noise=Unoise(n_min=-0.001, n_max=0.001),
+    )
+    for group in ("actor", "critic"):
+      cfg.observations[group].terms["cube_size"] = cube_size
   cfg.rewards["lift"].params["asset_cfg"].site_names = (GRASP_SITE,)
 
   # --- Get the PADS onto the cube, not just the palm site -------------------
@@ -576,9 +687,17 @@ def _apply_common(
   # --- Cube spawn: reachable region on the table ---
   lift_cmd = cfg.commands["lift_height"]
   assert isinstance(lift_cmd, LiftingCommandCfg)
+  # `spawn_jitter` widens the box symmetrically about the manipulation centre.
+  # NOT clamped against the table here: the binding constraint on this bench is
+  # the camera, not the bench (the table allows +853 mm in x and +-373 mm in y),
+  # and `scripts/wide_spawn_gate.py` is what checks it.
+  region = CUBE_REGION
+  if spawn_jitter is not None:
+    jx, jy = spawn_jitter
+    region = dict(x=(TABLE_X - jx, TABLE_X + jx), y=(-jy, +jy))
   lift_cmd.object_pose_range = LiftingCommandCfg.ObjectPoseRangeCfg(
-    x=CUBE_REGION["x"],
-    y=CUBE_REGION["y"],
+    x=region["x"],
+    y=region["y"],
     z=(RESTING_Z, RESTING_Z),  # cube CENTRE resting on the foam
     yaw=(-3.14, 3.14),
   )
@@ -595,8 +714,8 @@ def _apply_common(
   lift_cmd.difficulty = goal_mode
   cfg.rewards["lift"].params["bringing_std"] = bringing_std
   lift_cmd.target_position_range = LiftingCommandCfg.TargetPositionRangeCfg(
-    x=CUBE_REGION["x"],
-    y=CUBE_REGION["y"],
+    x=region["x"],
+    y=region["y"],
     z=(WORK_SURFACE_Z + 0.10, WORK_SURFACE_Z + 0.20),
   )
 
@@ -774,6 +893,96 @@ def _apply_common(
         },
       )
 
+  # --- Put the pads on the MIDDLE OF A FACE ----------------------------------
+  # Success is 100% here and the grasp is still bad, which means no existing
+  # metric can score a fix. `scripts/wide_grasp_pose_audit.py` measures the pose
+  # itself off the contact points; on this teacher and on its 99.2% student it
+  # reports the same five things (carry phase, 128 envs):
+  #
+  #   horiz margin  0.3-1.0 mm   a pad pinching ON a vertical edge
+  #   grip height    +10-11 mm   holding the upper half, not across the middle
+  #   pad site lat      18 mm    the force lands nowhere near the pad site
+  #   cube tilt         26 deg   the cube hangs crooked once it is lifted
+  #
+  # All four are one fault -- the grip is not landing on the middle of a face --
+  # and `contact_face_centring` is the one term that scores it. Nothing in the
+  # existing stack can: `pad_site_touch`'s box SDF is EXACTLY flat across a face
+  # (a pad 8.71 mm outboard scores 0.919 at the face centre and 0.919 at the top
+  # edge), and the midpoint terms are blind to the diagonal grasp the audit
+  # found, whose midpoint sits precisely at the cube's centre.
+  #
+  # A GATE, never an additive term, for the reason `jaw_alignment_gate` spells
+  # out: a separable pose term is hacked at a high weight and ignored at a low
+  # one. `face_gate` is its floor, and before contact there is no contact point
+  # to score, so the gate simply rests there and the approach is shaped exactly
+  # as it already was.
+  #
+  # `face_std` is SIZED FROM THE MEASUREMENT, not guessed -- this task has lost
+  # three runs to kernels that read 0.0000 forever. See the term's docstring.
+  if face_gate:
+    # `align_std_schedule` writes `align_std` into the `grasp` term's OWN
+    # params. Wrapping `grasp` buries those one level down inside `inner`, where
+    # `reward_curriculum` would not find them -- and would not raise either.
+    assert not align_curriculum, (
+      "align_curriculum and face_gate both target `grasp`; the schedule would"
+      " silently write align_std into the wrapper instead of the inner term"
+    )
+    # Separate sensors from `left_cube_contact` / `right_cube_contact`, which
+    # cannot answer this: they reduce with "netforce", which sums every contact
+    # on the finger into one wrench and discards the contact POSITIONS. Reusing
+    # them with a different reduction would change what `bilateral_grasp` means
+    # and make every arm incomparable with the baseline, so these are additional
+    # -- "maxforce" keeps the strongest contact per collider with its position.
+    pose_sensors = tuple(
+      ContactSensorCfg(
+        name=f"{side}_cube_pose",
+        primary=ContactMatch(mode="geom", pattern=pattern, entity="robot"),
+        secondary=ContactMatch(mode="body", pattern="cube", entity="cube"),
+        fields=("found", "force", "pos"),
+        reduce="maxforce",
+        num_slots=1,
+        history_length=1,
+      )
+      for side, pattern in (
+        ("left", LEFT_FINGERTIP_GEOMS),
+        ("right", RIGHT_FINGERTIP_GEOMS),
+      )
+    )
+    cfg.scene.sensors = (*cfg.scene.sensors, *pose_sensors)
+    face_params = {
+      "object_name": "cube",
+      "left_sensor": "left_cube_pose",
+      "right_sensor": "right_cube_pose",
+      "face_std": face_std,
+      "face_floor": face_gate,
+      "face_z_free": face_z_free,
+      "face_z_std": face_z_std,
+      "face_z_min": face_z_min,
+      "face_level_free": face_level_free,
+      "face_level_std": face_level_std,
+      "asset_cfg": SceneEntityCfg("robot", site_names=PAD_SITES),
+    }
+    for which in face_on:
+      key = {"touch": "pad_touch", "grasp": "grasp", "lift": "lift"}[which]
+      base = cfg.rewards[key]
+      params = dict(face_params)
+      if which == "lift":
+        # `lift` is the term that shapes the whole APPROACH, and it is the
+        # biggest single number in the stack (1.16 at the hover). Gating it at
+        # the same 0.3 floor as the others scales the entire pre-contact reward
+        # to 0.35 while every penalty keeps its full size -- and this task has
+        # already lost a run to exactly that balance, where the penalties buried
+        # the reward and the policy learned to RETREAT from the cube rather than
+        # approach it. The floor is raised here so the carry still pays for
+        # posture (0.7 -> 1.0 is a real gradient once the cube is held) without
+        # re-pricing the approach.
+        params["face_floor"] = face_lift_floor
+      cfg.rewards[key] = RewardTermCfg(
+        func=manipulation_mdp.gated_by_face_centring,
+        weight=base.weight,
+        params={"inner": base, **params},
+      )
+
   # Strong early to bootstrap closing, then decayed so the policy is pushed from
   # "pinch and hold" toward actually lifting (where lift/lift_precise dominate).
   cfg.curriculum["grasp_weight"] = CurriculumTermCfg(
@@ -795,11 +1004,27 @@ def _apply_common(
   # regressed into "pinch and press down on the table" right as the ramp hit
   # -1.0 -- a 100x velocity penalty makes standing still cheaper than the
   # transient velocity a lift costs. JOINT_VEL_PENALTY_FINAL caps the ramp.
+  #
+  # `joint_vel_max` and `joint_vel_ramp_iters` open the same ramp up for the
+  # reward-only speed arm. The audit prices the stock setting: at max_vel 0.5
+  # and weight -0.1 the term costs about 0.02 per step against `lift` at ~1.27,
+  # i.e. it is noise, and 26% of steps are over the threshold with nothing
+  # happening about it. Tightening to 0.25 / -0.5 puts it near 0.24 per step,
+  # which is the first setting large enough to be seen at all -- and -1.0 is
+  # already known to break the lift, so the usable window is roughly one
+  # doubling wide. Starting the ramp late matters for the same reason the
+  # alignment kernel is scheduled: `grasp` reads 0.0000 until ~iteration 750,
+  # and a penalty that bites during the discovery window squeezes unrewarded
+  # joints to a standstill (joint7's action std collapsed to 0.0083 rad that
+  # way).
+  cfg.rewards["joint_vel_hinge"].params["max_vel"] = joint_vel_max
+  cfg.rewards["action_rate_l2"].weight = action_rate_weight
+  ramp_mid, ramp_end = joint_vel_ramp_iters
   vel_curr = cfg.curriculum["joint_vel_hinge_weight"]
   vel_curr.params["stages"] = [
     {"step": 0, "weight": -0.01},
-    {"step": 500 * 24, "weight": max(-0.1, joint_vel_penalty_final)},
-    {"step": 1000 * 24, "weight": joint_vel_penalty_final},
+    {"step": ramp_mid * 24, "weight": max(-0.1, joint_vel_penalty_final)},
+    {"step": ramp_end * 24, "weight": joint_vel_penalty_final},
   ]
 
   # --- Two ways to unfreeze the wrist roll (joint7) ---------------------------
@@ -916,10 +1141,35 @@ def flexiv_two_finger_grasp_env_cfg(
   align_std: float = 0.436,
   align_on: tuple[str, ...] = ("grasp",),
   align_curriculum: bool = False,
+  face_gate: float = 0.0,
+  face_std: float = 0.02,
+  face_on: tuple[str, ...] = ("touch", "grasp"),
+  face_lift_floor: float = 0.7,
+  face_z_free: float = 0.018,
+  face_z_std: float = 0.005,
+  collision: str = "boxes",
+  spawn_jitter: tuple[float, float] | None = None,
+  finger_scale: float = 0.35,
+  observe_object_size: bool = False,
+  cube_scale_range: tuple[float, float] | None = None,
+  cube_mass_range: tuple[float, float] | None = None,
+  face_z_min: float = 0.0,
+  face_level_free: float = 0.0,
+  face_level_std: float = 0.0,
   free_wrist_penalties: bool = False,
   wrist_reset_range: float = 0.0,
   solve_wrist: bool = False,
   physics_dr: bool = False,
+  rate_limit: dict[str, float] | None = None,
+  ema_tau: dict[str, float] | float | None = None,
+  incremental: bool = False,
+  rate_limit_stages: list[dict[str, float]] | None = None,
+  saturation_weight: float = 0.0,
+  saturation_ramp_iters: tuple[int, int] = (750, 1500),
+  observe_command: bool = False,
+  joint_vel_max: float = 0.5,
+  joint_vel_ramp_iters: tuple[int, int] = (500, 1000),
+  action_rate_weight: float = -0.01,
 ) -> ManagerBasedRlEnvCfg:
   """State-based grasp: privileged cube pose in the observation."""
   cfg = _apply_common(
@@ -942,6 +1192,29 @@ def flexiv_two_finger_grasp_env_cfg(
     free_wrist_penalties,
     wrist_reset_range,
     solve_wrist,
+    face_gate=face_gate,
+    face_std=face_std,
+    face_on=face_on,
+    face_lift_floor=face_lift_floor,
+    face_z_free=face_z_free,
+    face_z_std=face_z_std,
+    collision=collision,
+    spawn_jitter=spawn_jitter,
+    finger_scale=finger_scale,
+    observe_object_size=observe_object_size,
+    face_z_min=face_z_min,
+    face_level_free=face_level_free,
+    face_level_std=face_level_std,
+    rate_limit=rate_limit,
+    ema_tau=ema_tau,
+    incremental=incremental,
+    rate_limit_stages=rate_limit_stages,
+    saturation_weight=saturation_weight,
+    saturation_ramp_iters=saturation_ramp_iters,
+    observe_command=observe_command,
+    joint_vel_max=joint_vel_max,
+    joint_vel_ramp_iters=joint_vel_ramp_iters,
+    action_rate_weight=action_rate_weight,
   )
 
   # NOTE: there is deliberately no cube-colour randomization. The scene is a
@@ -950,7 +1223,7 @@ def flexiv_two_finger_grasp_env_cfg(
   # dr.geom_rgba reset event here if the vision policy needs colour robustness.
 
   if physics_dr:
-    add_physics_dr(cfg)
+    add_physics_dr(cfg, cube_mass_range, cube_scale_range)
     # Spawn the cube clear of the highest bench draw so it is always in free
     # space and settles, rather than starting interpenetrated with a foam that
     # moved up under it -- HARD_SOLREF would launch it. The drop is at most
@@ -1165,6 +1438,8 @@ def flexiv_two_finger_distill_env_cfg(
   cam_type: Literal["rgb", "depth", "rgbd"],
   play: bool = False,
   percept_dr: bool = False,
+  student_history: int = 0,
+  size_privileged: bool = False,
   **teacher_kwargs: Any,
 ) -> ManagerBasedRlEnvCfg:
   """Teacher + student observations side by side, for DAgger distillation.
@@ -1177,7 +1452,9 @@ def flexiv_two_finger_distill_env_cfg(
              own kwargs through ``teacher_kwargs`` and the group is identical
              by construction.
     student  proprioception only: joint positions, velocities, last action, and
-             the commanded goal height. No cube pose in any form.
+             the commanded goal height. No cube pose in any form. With
+             ``size_privileged`` the object's true size is withheld as well, and
+             the student has to read it off the image like everything else.
     camera   the D435 image, which is where the cube has to come from instead.
 
   ``critic`` is left in place but unused: distillation regresses onto the
@@ -1191,10 +1468,27 @@ def flexiv_two_finger_distill_env_cfg(
   cfg = flexiv_two_finger_grasp_env_cfg(play=play, **teacher_kwargs)
   _add_d435_camera_group(cfg, cam_type, percept_dr=percept_dr)
 
+  # `cube_size` is the object's true half-edge, and whether the STUDENT gets it
+  # is the difference between two different tasks. `observe_object_size` was
+  # added for the teacher, where it is not privileged at all -- the teacher reads
+  # privileged state by definition -- and the student inherited it only because
+  # `_PRIVILEGED_TERMS` predates it. So the round-2 students were handed the
+  # exact size of the thing they were meant to be seeing, at zero noise under
+  # `play`. Neither setting is wrong; they answer different questions ("can it
+  # grasp a 15 mm cube it has been TOLD is 15 mm" vs "can it read the size off
+  # the depth image"), and the size input is genuinely required somewhere,
+  # because a size-blind full close on a 50 mm cube is ~0.24 rad of over-travel.
+  #
+  # A PARAMETER rather than an edit to the tuple, for the reason the collision
+  # set is one: it changes the student's observation WIDTH, so a checkpoint is
+  # only loadable under the setting it was trained with. Editing the constant
+  # would silently orphan every 35-dimension student already on disk instead of
+  # putting the difference in the task id.
+  privileged = _PRIVILEGED_TERMS + (("cube_size",) if size_privileged else ())
   student_terms = {
     name: deepcopy(term)
     for name, term in cfg.observations["actor"].terms.items()
-    if name not in _PRIVILEGED_TERMS
+    if name not in privileged
   }
   student_terms["goal_height"] = ObservationTermCfg(
     func=manipulation_mdp.goal_height,
@@ -1205,6 +1499,16 @@ def flexiv_two_finger_distill_env_cfg(
     # Same sensor noise the teacher trained under, so the student is not
     # distilled on a cleaner signal than it will ever see.
     enable_corruption=not play,
+    # PROPRIOCEPTION ONLY, and the camera group is deliberately left at one
+    # frame. The student's residual against its teacher is temporally
+    # INDEPENDENT -- s_g1_relabel reverses 11.75 times a second in the carry
+    # against the teacher's 0.93 while asking for nothing the limiter cannot
+    # give (requested/published 1.0x) -- so the chatter that is left is noise
+    # the student cannot average because it has no memory to average over.
+    # History here is nearly free: these terms are a few dozen scalars, whereas
+    # stacking the 160x120 depth image multiplies the CNN input and the rollout
+    # buffer that already forced num_envs down to 1024.
+    history_length=student_history or None,
   )
 
   # AFTER the student group exists, and that ordering is the whole point: the

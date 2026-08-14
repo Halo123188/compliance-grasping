@@ -156,6 +156,11 @@ def flexiv_two_finger_distill_runner_cfg(
   student_sees_state: bool = False,
   beta_decay_iters: int = 0,
   fine_cnn: bool = False,
+  relabel_achievable: bool = False,
+  saturation_weight: float = 0.0,
+  action_rate_weight: float = 0.0,
+  penalty_ramp_start: int = 0,
+  penalty_ramp_end: int = 0,
 ) -> RslRlDistillationRunnerCfg:
   """DAgger: fit a depth/RGB student to the frozen state teacher's actions.
 
@@ -244,12 +249,23 @@ def flexiv_two_finger_distill_runner_cfg(
       # otherwise, and on this task it knocks the cube off the table in the
       # first few steps and never recovers -- so every later label is the
       # teacher's opinion about a cube on the floor.
+      # The smoothed class is a strict superset of DaggerDistillation -- with
+      # all three knobs at their defaults it IS DaggerDistillation -- but it is
+      # only selected when one of them is on, so an unrelated distillation run
+      # keeps the exact code path it had.
       class_name=(
-        "mjlab.rl.distillation:DaggerDistillation"
+        "mjlab.tasks.manipulation.rl.distillation:SmoothedDaggerDistillation"
+        if (relabel_achievable or saturation_weight or action_rate_weight)
+        else "mjlab.rl.distillation:DaggerDistillation"
         if beta_decay_iters > 0
         else "Distillation"
       ),
       beta_decay_iters=beta_decay_iters,
+      relabel_achievable=relabel_achievable,
+      saturation_weight=saturation_weight,
+      action_rate_weight=action_rate_weight,
+      penalty_ramp_start=penalty_ramp_start,
+      penalty_ramp_end=penalty_ramp_end,
     ),
     obs_groups={
       "student": ("actor",) if student_sees_state else ("student", "camera"),
@@ -260,3 +276,86 @@ def flexiv_two_finger_distill_runner_cfg(
     num_steps_per_env=24,
     max_iterations=max_iterations,
   )
+
+
+def flexiv_two_finger_finetune_runner_cfg(
+  experiment_name: str = "flexiv_two_finger_wide_grasp_finetune",
+  learning_rate: float = 1.0e-4,
+  entropy_coef: float = 0.0,
+  critic_warmup_iters: int = 100,
+  std_max: float = 0.03,
+  max_iterations: int = 1_500,
+  student_history: int = 0,
+  fine_cnn: bool = False,
+) -> RslRlOnPolicyRunnerCfg:
+  """PPO on the DISTILLED student: camera actor, privileged critic.
+
+  The actor config must match `flexiv_two_finger_distill_runner_cfg`'s student
+  BIT FOR BIT -- same hidden dims, same CNN, same ``obs_normalization``, same
+  distribution type -- or the distilled weights do not load into it. The one
+  field that legitimately differs is ``init_std``, and only because it is
+  immediately overwritten by the checkpoint's own value.
+
+  ASYMMETRIC ACTOR-CRITIC, which is the reason this is affordable at all. The
+  actor sees what the robot sees (``student`` + ``camera``); the critic sees the
+  43-dim privileged state the teacher was trained on. Estimating a value
+  function from a noisy 160x120 depth image is a harder problem than the control
+  one, and there is no reason to solve it -- the critic is a training-time
+  object and is thrown away at deployment.
+
+  ``entropy_coef`` DEFAULTS TO ZERO, unlike every other PPO cfg here. The
+  distilled student arrives with std 0.02 and entropy rewards enlarging it,
+  while the executed-std sweep in `flexiv_two_finger_distill_runner_cfg` puts
+  the cliff between 0.02 and 0.05 (97.8% -> 42.5% lifted). A fine-tune has
+  nothing to discover: the policy is already on-task, and every unit of extra
+  exploration is spent on rollouts that fail for reasons unrelated to what is
+  being learned.
+
+  ``learning_rate`` is 10x below the from-scratch value for the same reason.
+  """
+  cfg = _base(experiment_name, init_std=0.02, entropy_coef=entropy_coef)
+  cfg.actor = RslRlModelCfg(
+    hidden_dims=(512, 256, 128),
+    activation="elu",
+    obs_normalization=True,
+    cnn_cfg=_STUDENT_CNN_FINE_CFG if fine_cnn else _STUDENT_CNN_CFG,
+    class_name=_VISION_MODEL_CLS,
+    distribution_cfg={
+      "class_name": "GaussianDistribution",
+      "init_std": 0.02,
+      "std_type": "scalar",
+    },
+  )
+  cfg.critic = RslRlModelCfg(
+    hidden_dims=(512, 256, 128),
+    activation="elu",
+    obs_normalization=True,
+  )
+  cfg.obs_groups = {
+    "actor": ("student", "camera"),
+    "critic": ("critic",),
+  }
+  cfg.algorithm.class_name = "mjlab.tasks.manipulation.rl.finetune:FinetunePPO"
+  cfg.algorithm.learning_rate = learning_rate
+  cfg.algorithm.entropy_coef = entropy_coef
+  cfg.algorithm.critic_warmup_iters = critic_warmup_iters
+  # Setting entropy to 0 is NOT sufficient -- the policy gradient drifts the std
+  # up on its own (job 67480). 0.03 leaves the fine-tune a little room above the
+  # distilled 0.02 while staying clear of the measured 0.05 cliff.
+  cfg.algorithm.std_max = std_max
+  # Fixed, not adaptive. The adaptive schedule multiplies the rate by 1.5 as
+  # soon as the measured KL is small, and the first thing a frozen actor
+  # produces is a KL of exactly zero -- so the warm-up would hand the actor back
+  # a learning rate several times the one chosen for it.
+  cfg.algorithm.schedule = "fixed"
+  cfg.experiment_name = experiment_name
+  cfg.max_iterations = max_iterations
+  cfg.num_steps_per_env = 24
+  # 25, not the 100 used everywhere else. A fine-tune starts good and can only
+  # be measured against where it started, so the interesting checkpoints are
+  # early and close together. Job 68179 was at its best over iterations 35-63
+  # and there is no checkpoint of it: model_0 is the warm start and model_100 is
+  # already 35 iterations past the collapse.
+  cfg.save_interval = 25
+  del student_history  # the env carries it; kept for signature symmetry
+  return cfg

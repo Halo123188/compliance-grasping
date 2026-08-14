@@ -9,6 +9,7 @@ import torch
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import CameraSensor
+from mjlab.tasks.manipulation.mdp.actions import SmoothedJointPositionAction
 from mjlab.tasks.manipulation.mdp.commands import (
   LiftingCommand,
   MultiCubeLiftingCommand,
@@ -112,6 +113,42 @@ def ee_velocity(
   ee_quat_w = robot.data.site_quat_w[:, asset_cfg.site_ids].squeeze(1)
   ee_vel_linear_ee = quat_apply(quat_inv(ee_quat_w), ee_vel_linear_w)
   return ee_vel_linear_ee
+
+
+def smoothed_action_command(
+  env: ManagerBasedRlEnv,
+  action_name: str = "joint_pos",
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """A `SmoothedJointPositionAction`'s internal command, relative to default.
+
+  The limiter carries state the policy does not otherwise see. The original
+  term left it out on the argument that it is nearly recoverable from
+  `joint_pos` plus the last action, since a stiff servo tracks its target
+  closely -- which is true, and beside the point once the limiter saturates.
+  Under saturation the published command lags the REQUEST by an unbounded
+  amount (16.7x on the SlewCurr teacher, job 61221), so `target - cmd` is not
+  small, is not inferable from a tracking error, and is exactly the quantity a
+  policy needs in order to stop winding up against a limit it cannot feel.
+
+  Same convention as `joint_pos_rel`: default-relative, so a zero observation
+  means "command sitting at the home pose".
+
+  Adding this changes the observation dimension, so a checkpoint trained
+  without it cannot be warm-started into a task that has it, in either
+  direction. It has to go in the STUDENT group too, not just the teacher's --
+  it is proprioception, available on hardware, and a student that cannot see
+  the limiter inherits the same blindness.
+  """
+  term = env.action_manager.get_term(action_name)
+  if not isinstance(term, SmoothedJointPositionAction):
+    raise TypeError(
+      f"smoothed_action_command needs a SmoothedJointPositionAction, "
+      f"got {type(term).__name__}"
+    )
+  robot: Entity = env.scene[asset_cfg.name]
+  default = robot.data.default_joint_pos[:, term.target_ids]
+  return term.command - default
 
 
 def target_position(
@@ -536,3 +573,27 @@ def camera_target_cube_mask(
   mask = (obj_ids.unsqueeze(-1) == target_ids.unsqueeze(1).unsqueeze(1)).any(-1)
   mask = mask & is_geom
   return mask.float().unsqueeze(1)  # (B, 1, H, W)
+
+
+def object_half_extent(
+  env: ManagerBasedRlEnv,
+  object_name: str,
+) -> torch.Tensor:
+  """The object's half-edge, in metres. [B, 1]
+
+  REQUIRED once the size range is wide enough that one closing depth cannot
+  serve both ends of it. Today the policy is size-BLIND and gets away with it:
+  it commands full close and the cube stops the fingers wherever it stops them,
+  because the finger range's lower bound (-0.0754, a 40 mm gap) is only 10 mm
+  inside a 50 mm cube. Open that bound up far enough to pinch a 15 mm object
+  (-0.32) and the same full-close command becomes ~0.24 rad of over-travel on a
+  50 mm cube -- order 350 N, against the 459 N forced-closure incident that
+  threw the cube 607 mm off the table. The policy has to know which object it is
+  holding before it is allowed to close that far.
+
+  Read from the live model rather than from a config constant, so it follows
+  `dr_cube_scale`'s per-env draw instead of reporting the nominal size.
+  """
+  obj: Entity = env.scene[object_name]
+  gid = int(obj.indexing.geom_ids[0])
+  return env.sim.model.geom_size[:, gid, 0].unsqueeze(-1)

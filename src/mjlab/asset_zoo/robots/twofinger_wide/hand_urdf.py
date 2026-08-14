@@ -54,6 +54,10 @@ HANDS_DIR = _ASSETS / "hands"
 HAND_NAME = (os.environ.get("CG_HAND") or "wide").lower()
 HAND_CAD_DIR = HANDS_DIR / HAND_NAME
 MESH_DIR = HAND_CAD_DIR / "meshes"
+# Alternate collision geometry (COACD sets at several thresholds). Nothing here
+# is used unless CG_HAND_COLLISION selects it; see arm_cfg._HAND_COLLISION and
+# the directory's own README for how the sets were generated and measured.
+COLLISION_DIR = HAND_CAD_DIR / "collision"
 _URDF = HAND_CAD_DIR / "hand.urdf"
 
 

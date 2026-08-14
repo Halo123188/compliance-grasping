@@ -8,6 +8,7 @@ import torch
 from mjlab.entity import Entity
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactSensor
+from mjlab.tasks.manipulation.mdp.actions import SmoothedJointPositionAction
 from mjlab.tasks.manipulation.mdp.commands import (
   LiftingCommand,
   MultiCubeLiftingCommand,
@@ -309,20 +310,8 @@ def jaw_alignment_gate(
   return floor + (1.0 - floor) * torch.exp(-((mis / std) ** 2))
 
 
-def gated_by_alignment(
-  env: ManagerBasedRlEnv,
-  inner: Any,
-  object_name: str,
-  align_std: float = 0.436,
-  align_floor: float = 0.3,
-  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
-) -> torch.Tensor:
-  """Scale any existing reward term by the jaw-alignment gate.
-
-  ``inner`` is the RewardTermCfg this wraps; its func and params are called with
-  the wrapped term's own semantics and only its magnitude is modulated. Used to
-  put the gate on terms that are non-zero early in training -- see the note in
-  env_cfgs on why gating only `grasp` leaves the wrist frozen.
+def _inner_params(inner: Any, asset_cfg: SceneEntityCfg, who: str) -> dict:
+  """The wrapped term's params with the RESOLVED asset_cfg substituted in.
 
   The inner ``asset_cfg`` MUST be substituted, not passed through. The reward
   manager resolves ``SceneEntityCfg`` name lists into index lists for the params
@@ -339,7 +328,7 @@ def gated_by_alignment(
   inner_cfg = params.get("asset_cfg")
   if isinstance(inner_cfg, SceneEntityCfg):
     assert inner_cfg.name == asset_cfg.name, (
-      f"gated_by_alignment can only fix up an inner asset_cfg on the same entity:"
+      f"{who} can only fix up an inner asset_cfg on the same entity:"
       f" inner is {inner_cfg.name!r}, gate is {asset_cfg.name!r}"
     )
     # Compared as tuples: resolving turns the configured tuple into a list.
@@ -348,8 +337,282 @@ def gated_by_alignment(
       f" {asset_cfg.site_names!r}; the resolved ids cannot stand in for it"
     )
     params["asset_cfg"] = asset_cfg
+  return params
+
+
+def gated_by_alignment(
+  env: ManagerBasedRlEnv,
+  inner: Any,
+  object_name: str,
+  align_std: float = 0.436,
+  align_floor: float = 0.3,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Scale any existing reward term by the jaw-alignment gate.
+
+  ``inner`` is the RewardTermCfg this wraps; its func and params are called with
+  the wrapped term's own semantics and only its magnitude is modulated. Used to
+  put the gate on terms that are non-zero early in training -- see the note in
+  env_cfgs on why gating only `grasp` leaves the wrist frozen.
+  """
+  params = _inner_params(inner, asset_cfg, "gated_by_alignment")
   return inner.func(env, **params) * jaw_alignment_gate(
     env, object_name, align_std, align_floor, asset_cfg
+  )
+
+
+def _contact_offsets(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  obj: Entity,
+  min_force: float,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+  """Where a finger's contact sits: (horizontal offset, face height, lift height).
+
+  The strongest contact on the finger, put into the cube's frame. The axis of
+  largest magnitude is the face it landed on; the remaining HORIZONTAL
+  coordinate is how far along that face the grip sits, toward a vertical edge,
+  and the height is |z| above the cube's mid-plane regardless of face.
+  Size-independent, so `dr_cube_scale` does not move either.
+
+  BOTH ARE RETURNED, and round 1 is why. That version scored the horizontal
+  offset ALONE, on the measured argument that the vertical offset is not a
+  policy fault -- the finger's gripping face sits 23-33 mm above its tip, so the
+  grip lands high on a 50 mm cube no matter what, and `scripts/wide_check.py`'s
+  scripted expert contacts 20.4 mm above the mid-plane, HIGHER than the 13.9 mm
+  the trained policy manages. That reasoning was right and the conclusion was
+  not: dropping the axis instead of relaxing it left a hole, and both tight arms
+  (p1_Face, p1_FaceLift) drove straight through it. A contact at the CENTRE of
+  the top face has almost no horizontal offset, so it scored perfectly -- and
+  the audit found `pad z spread` at 45 mm on a 50 mm cube with `vert margin` at
+  0.0, i.e. one finger on the top face and one dug under the cube through the
+  compliant foam, pinching it vertically. Side-face contacts fell 90% -> 58% and
+  cube tilt rose 25 -> 39 deg. Success stayed at 99.2%, so nothing but this
+  audit could have seen it.
+
+  The height is therefore charged as a HINGE, not as an error: free out to the
+  band the claw actually needs, priced only beyond it. See
+  `contact_face_centring`.
+
+  A finger that is not touching returns a large number on both, so a gate built
+  on these sits at its floor when there is no grasp instead of paying full price
+  for one.
+  """
+  data = env.scene[sensor_name].data
+  assert data.force is not None and data.pos is not None, (
+    f"contact sensor {sensor_name} must report both 'force' and 'pos'"
+  )
+  mag = torch.norm(data.force, dim=-1)  # [B, N]
+  idx = mag.argmax(dim=1)
+  best = mag.gather(1, idx.view(-1, 1)).squeeze(1)
+  pos = data.pos.gather(1, idx.view(-1, 1, 1).expand(-1, 1, 3)).squeeze(1)
+
+  rel = pos - obj.data.root_link_pos_w
+  local = math_utils.quat_apply_inverse(obj.data.root_link_quat_w, rel).abs()
+  face = local.argmax(dim=-1, keepdim=True)
+  # Zeroing the face axis leaves the two in-face coordinates; of those, x and y
+  # are the horizontal pair, and one of them IS the zeroed face axis whenever
+  # the contact is on a side face -- so the max picks out the other. On a top
+  # face neither is zeroed and the max picks the binding one.
+  horiz = local.scatter(-1, face, 0.0)[:, :2].amax(dim=-1)
+  vert = local[:, 2]
+  # The height in the WORLD frame as well, and signed. The cube-frame |z| above
+  # says WHICH FACE the contact is on, which is what the top-face guard needs;
+  # it cannot say whether the grip is above or below the centre of mass, both
+  # because it is unsigned and because a cube may rest on any face. Hanging the
+  # load below the pinch line is a physical claim about gravity, so it has to be
+  # measured against gravity.
+  lift_h = rel[:, 2]
+  live = best > min_force
+  far = torch.full_like(horiz, 1e3)
+  return (
+    torch.where(live, horiz, far),
+    torch.where(live, vert, far),
+    torch.where(live, lift_h, torch.zeros_like(lift_h)),
+  )
+
+
+def contact_face_centring(
+  env: ManagerBasedRlEnv,
+  object_name: str,
+  left_sensor: str = "left_cube_pose",
+  right_sensor: str = "right_cube_pose",
+  std: float = 0.020,
+  floor: float = 0.3,
+  min_force: float = 0.05,
+  z_free: float = 0.018,
+  z_std: float = 0.005,
+  z_min: float = 0.0,
+  z_min_std: float = 0.005,
+  level_free: float = 0.0,
+  level_std: float = 0.35,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Grip a SIDE face on its centre-line, not an edge -- a gate in [floor, 1].
+
+  The measured fault this exists for (`scripts/wide_grasp_pose_audit.py`, 128
+  envs, on the 100%-success `g1_satpen` teacher and its 99.2% student). Carry
+  phase, and both policies read the same:
+
+    horiz margin   0.3-1.0 mm   a pad is pinching ON a vertical edge
+    vert margin      9-11 mm    gripping the upper half, not the top edge
+    grip height    +10-11 mm    above the cube's mid-plane
+    pad site lat     18 mm      the force lands nowhere near the pad site
+    cube tilt         26 deg    the cube hangs crooked once it is picked up
+
+  The one this term goes after is `horiz margin`: BOTH policies pinch within a
+  millimetre of a vertical edge. That is the fault the audit shows most starkly
+  and the one with real headroom -- see `_contact_in_face` for why the vertical
+  offset is NOT included, and why including it would have been this task's
+  fifth reward that asks for an unreachable pose.
+
+  Squaring the jaw is what fixes it, so this is also the alignment term -- just
+  expressed as the geometry alignment buys rather than as an angle. A jaw
+  rotated in-plane lands its two contacts at diagonally opposite corners; a
+  square one lands them on the centre-line. Six previous attempts to reward the
+  wrist AS AN ANGLE all failed here (four reward variants, two exploration
+  variants, plus the closed-form solver), and `jaw yaw` sitting at a 5-8 deg
+  median with a 37 deg p90 is what that failure looks like from outside.
+
+  IT SCORES THE CONTACT POINT, NOT THE PAD SITE, and the difference is the whole
+  design. The first version of this term centred the two PAD_SITES, which is
+  wrong on this claw: the sites are at the finger TIPS while the finger's actual
+  gripping surface sits ~18 mm further up it -- which is precisely what the
+  audit's `pad site lat` column measures. Centring the tip on a face would put
+  the CONTACT ~18 mm higher, i.e. off the top of a 50 mm cube: a term actively
+  rewarding the fault it was written to remove. `scripts/wide_check.py` caught
+  it before any GPU time was spent, by reading the gate at the scripted grip and
+  getting 0.65 where a correct target has to give ~1. Any future edit here must
+  re-run that check and read `_grip_geometry`'s two numbers against it.
+
+  WHY NOTHING IN THE EXISTING STACK CATCHES IT. `pad_site_touch` scores the box
+  SDF, the distance to the NEAREST SURFACE POINT -- and that is flat across the
+  whole face. A pad 8.71 mm outboard of a face scores exp(-(8.71/30)^2) = 0.919
+  whether it sits on the face's centre or 25 mm up at the top edge: q = |local| -
+  half has the same positive component either way, so the SDF returns the same
+  8.71 mm. It is not a weak gradient on grasp height, it is exactly zero
+  gradient. Nor does anything else look: `antipodal_pinch` (deleted when
+  `touch_weight` was set) scored the midpoint, and a midpoint is blind to the
+  diagonal grasp the audit actually found -- two pads at opposite corners of two
+  opposite faces have their midpoint exactly at the cube's centre.
+
+  WHAT IT MEASURES. Each finger's strongest contact goes into the cube's frame;
+  the axis of largest magnitude is the face it landed on, and what is scored is
+  how far along that face the contact sits, toward a vertical edge.
+  Size-independent, so `dr_cube_scale` does not move it.
+
+  THE WORSE OF THE TWO FINGERS, not the mean and not the product. A mean pays
+  half price for one pad landing correctly while the other hooks a corner, which
+  is the one-sided grasp this task produces repeatedly; a product bottoms out at
+  ~0 the moment either pad is off, which is the 0.0000-forever trap.
+
+  A MULTIPLIER WITH A FLOOR, for the reason `jaw_alignment_gate` documents at
+  length: an additive pose term is separable from the grasp, so it gets hacked
+  at a high weight and ignored at a low one, and a bare product annihilates the
+  reward it scales before the grasp is ever discovered. Before contact there is
+  no contact point to score at all, so the gate simply sits at its floor -- the
+  approach is shaped by `pad_touch` and `lift` exactly as it already was, and
+  this only starts speaking once there is a grip to correct.
+
+  ``std`` IS SIZED FROM THE MEASUREMENT, not guessed -- three runs on this task
+  have been lost to kernels that read 0.0000 forever. `horiz margin` 0.9 mm on a
+  24.8 mm half-cube puts the baseline contact 23.9 mm off the centre-line; at
+  std = 20 mm the gate reads 0.47 there against 1.0 on the centre-line, so there
+  is a 2.1x climb from where the policy actually is. The scripted expert's
+  14-17 mm scores ~0.70, which is the sanity check that the kernel rates a
+  mediocre pose as mediocre rather than saturating.
+
+  THE HEIGHT IS A HINGE, AND IT IS NOT OPTIONAL. ``z_free`` is how high up the
+  cube a contact may sit for nothing, and only the excess beyond it is charged,
+  through ``z_std``. Two numbers set it, both measured rather than chosen: the
+  claw NEEDS 10-20 mm (its gripping face is 23-33 mm above the fingertip, and
+  the scripted expert sits at 20.4 mm), while the exploit round 1 found lives at
+  22-25 mm, where a finger is over the top edge and onto the top face. The band
+  is therefore genuinely narrow, and a hinge is the only shape that fits it: a
+  Gaussian on the height alone would charge the expert's own pose, and dropping
+  the axis -- which round 1 did -- is what opened the exploit. At the default
+  18 mm / 5 mm a 22 mm contact keeps 0.53 of the gate and a 25 mm one keeps
+  0.14, while everything the hardware actually needs pays nothing.
+  """
+  obj: Entity = env.scene[object_name]
+  h_l, v_l, z_l = _contact_offsets(env, left_sensor, obj, min_force)
+  h_r, v_r, z_r = _contact_offsets(env, right_sensor, obj, min_force)
+  horiz = torch.maximum(h_l, h_r)
+  # The hinge, on the WORSE finger for the same reason as the horizontal term:
+  # one finger over the top edge is the whole exploit, and a mean would price it
+  # at half.
+  excess = torch.maximum(v_l, v_r).sub(z_free).clamp(min=0.0)
+  raw = torch.exp(-((horiz / std) ** 2)) * torch.exp(-((excess / z_std) ** 2))
+
+  if z_min > 0.0:
+    # HOLD THE LOAD BELOW THE PINCH LINE. Round 2 drove the grip to the cube's
+    # mid-plane and cube tilt got WORSE, 24 -> 30 deg, which is not a reward
+    # hack but physics the round-2 design had backwards: a pinch ABOVE the
+    # centre of mass self-rights like a pendulum, while a pinch THROUGH it is
+    # neutrally stable, so any rotation the lift imparts simply stays. The
+    # baseline's +9.3 mm was doing that work and centring threw it away. Charged
+    # only BELOW z_min, so the useful band is free and the top-face guard above
+    # still bites.
+    short = torch.tensor(z_min, device=raw.device) - 0.5 * (z_l + z_r)
+    raw = raw * torch.exp(-((short.clamp(min=0.0) / z_min_std) ** 2))
+
+  if level_std > 0.0 and level_free >= 0.0:
+    # KEEP THE CLOSING AXIS HORIZONTAL. p2_FaceZHard satisfied a tight height
+    # hinge by ROLLING THE WRIST 45.7 deg instead of approaching differently --
+    # tipping the finger drops the contact for free -- and the cube then hangs
+    # off the tilted pinch line at 39.4 deg. Nothing else in the stack looks at
+    # the roll, so nothing else could stop it.
+    robot: Entity = env.scene[asset_cfg.name]
+    pads = robot.data.site_pos_w[:, asset_cfg.site_ids]
+    axis = pads[:, 1] - pads[:, 0]
+    tilt = torch.asin(
+      (axis[:, 2] / axis.norm(dim=-1).clamp(min=1e-9)).clamp(-1.0, 1.0)
+    ).abs()
+    raw = raw * torch.exp(-((tilt.sub(level_free).clamp(min=0.0) / level_std) ** 2))
+
+  return floor + (1.0 - floor) * raw
+
+
+def gated_by_face_centring(
+  env: ManagerBasedRlEnv,
+  inner: Any,
+  object_name: str,
+  left_sensor: str = "left_cube_pose",
+  right_sensor: str = "right_cube_pose",
+  face_std: float = 0.020,
+  face_floor: float = 0.3,
+  min_force: float = 0.05,
+  face_z_free: float = 0.018,
+  face_z_std: float = 0.005,
+  face_z_min: float = 0.0,
+  face_z_min_std: float = 0.005,
+  face_level_free: float = 0.0,
+  face_level_std: float = 0.0,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Scale any existing reward term by ``contact_face_centring``. See both.
+
+  ``asset_cfg`` is not read by the gate -- which measures contacts, not sites --
+  and exists only so the reward manager resolves it and ``_inner_params`` can
+  substitute it into the wrapped term. Dropping it would leave the inner term's
+  site selection unresolved, which is the silent failure documented there.
+  """
+  params = _inner_params(inner, asset_cfg, "gated_by_face_centring")
+  return inner.func(env, **params) * contact_face_centring(
+    env,
+    object_name,
+    left_sensor,
+    right_sensor,
+    face_std,
+    face_floor,
+    min_force,
+    face_z_free,
+    face_z_std,
+    face_z_min,
+    face_z_min_std,
+    face_level_free,
+    face_level_std,
+    asset_cfg,
   )
 
 
@@ -520,6 +783,40 @@ def joint_velocity_hinge_penalty(
   joint_vel = robot.data.joint_vel[:, asset_cfg.joint_ids]
   excess = (joint_vel.abs() - max_vel).clamp_min(0.0)
   return (excess**2).sum(dim=-1)
+
+
+def action_saturation_penalty(
+  env: ManagerBasedRlEnv,
+  action_name: str = "joint_pos",
+) -> torch.Tensor:
+  """Charge for asking a `SmoothedJointPositionAction` for more than its cap.
+
+  Returns the per-joint mean of the term's `saturation` -- 0 while the limiter
+  can follow the request, N when the policy is asking for N+1 times the cap.
+
+  The point is NOT that a saturated request wastes anything; the limiter throws
+  the excess away for free, which is precisely the problem. Once pinned, only
+  the sign of `target - cmd` reaches the simulation, so the magnitude receives
+  no gradient and drifts outward, and the joint degenerates into bang-bang --
+  full-cap motion that reverses whenever the network output crosses zero. That
+  is chatter, and the slew cap does not prevent it: the cap bounds SPEED, not
+  DIRECTION CHANGES, so a policy can sit at the speed limit and still shake.
+
+  Measured on the SlewCurr teacher, which had no such penalty: the requested
+  target moved 16.7x faster than the published one, actions ran to 27.0 against
+  a trained range of about |5|, and the distilled student never settled while
+  carrying (TCP p95 0.74 m/s vs its own teacher's 0.42).
+
+  Mean rather than sum so the weight does not have to be retuned when the
+  action dimension changes; uncapped joints contribute exactly 0.
+  """
+  term = env.action_manager.get_term(action_name)
+  if not isinstance(term, SmoothedJointPositionAction):
+    raise TypeError(
+      f"action_saturation_penalty needs a SmoothedJointPositionAction, "
+      f"got {type(term).__name__}"
+    )
+  return term.saturation.mean(dim=-1)
 
 
 def action_rate_l2_except(

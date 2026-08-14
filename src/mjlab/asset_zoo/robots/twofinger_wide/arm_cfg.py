@@ -77,6 +77,7 @@ import numpy as np
 from mjlab.actuator import XmlActuatorCfg
 from mjlab.asset_zoo.robots.twofinger_wide.hand_urdf import (
   ASSETS_DIR,
+  COLLISION_DIR,
   HANDS_DIR,
   fit_collision_boxes,
   load_hand_cad,
@@ -591,6 +592,62 @@ def _add_collision_box(body: mujoco.MjsBody, name: str, halfsize, pos) -> None:
   g.group = 3
 
 
+# Which collision representation the hand is built from. "boxes" is the default
+# and the one every checkpoint was trained against; the coacd_* sets are the
+# ones in assets/hands/wide/collision/, whose README carries the measurements
+# behind this choice.
+#
+# MEASURED on the gripping band of `right_2`, sampled across the pad patch
+# rather than at the bounding vertices (the bounds measurement is trivially
+# zero and says nothing about contact):
+#
+#   fitted boxes   0.90 mm     coacd_t0.2   0.35 mm     coacd_t0.4   0.35 mm
+#
+# COACD is the better fit and it plateaus at +0.346 mm at EVERY threshold --
+# that floor is the remesh of three non-watertight parts, not the decomposition,
+# so buying a finer set buys nothing.
+# NOT an environment variable, and that is the point. This changes the PHYSICS
+# -- the same full-close command grips at 12.4 N on boxes and 7.0 N on
+# coacd_t0.2 -- so a checkpoint is only valid under the setting it was trained
+# with. An env var makes the mismatch SILENT: the policy would simply look
+# worse, with nothing raising. It is threaded from the task registration instead
+# so the task id records it and the two can never be paired wrongly.
+HAND_COLLISION_SETS = ("boxes", "coacd_t0.15", "coacd_t0.2", "coacd_t0.4")
+
+
+def _add_collision_mesh(body: mujoco.MjsBody, name: str, meshname: str) -> None:
+  r"""One convex hull, wearing the same contact identity as `_add_collision_box`.
+
+  The NAME MATTERS and must keep the `_col<k>` shape: `FINGERTIP_GEOMS` and the
+  three `fingertip_friction_*` events select the fingertips by the regex
+  `(left_2|right_2)_col\d_tf`, and a pattern that matches nothing reports no
+  contact rather than raising. Naming the hulls the way the boxes were named is
+  what lets the whole task config stay untouched by this switch.
+  """
+  g = body.add_geom()
+  g.name = name
+  g.type = mujoco.mjtGeom.mjGEOM_MESH
+  g.meshname = meshname
+  g.contype = FINGER_BIT
+  g.conaffinity = OBJECT_BIT | FINGER_BIT
+  g.friction = np.array([1.0, 0.05, 0.001])  # printed pad; object priority wins pair
+  g.rgba = np.array([0.3, 0.3, 0.3, 0.4])
+  g.group = 3
+
+
+def _coacd_parts(tag: str) -> dict[str, list[str]]:
+  """{part: [mesh name, ...]}, registering nothing -- the caller adds the meshes.
+
+  Hulls are stored in each PART'S OWN FRAME, matching the STL they came from, so
+  they need no pos/quat when attached to the body that already carries that
+  part's visual mesh.
+  """
+  import json
+
+  man = json.loads((COLLISION_DIR / tag / "manifest.json").read_text())
+  return {part: entry["files"] for part, entry in man.items()}
+
+
 def _add_finger_joint(body: mujoco.MjsBody, name: str, cad) -> None:
   """Hinge for one finger link.
 
@@ -782,7 +839,7 @@ def _set_inertial_full(body: mujoco.MjsBody, link) -> None:
   body.explicitinertial = True
 
 
-def _hand_spec() -> mujoco.MjSpec:
+def _hand_spec(collision: str = "boxes") -> mujoco.MjSpec:
   """The 70 mm-knuckle claw, built from the vendored CAD URDF.
 
   Same shape of spec as ``_hand_spec`` -- root body ``hand_base``, one hinge
@@ -801,6 +858,25 @@ def _hand_spec() -> mujoco.MjSpec:
     m.name = n
     m.file = str(WIDE_MESH_DIR / f"{n}.stl")
 
+  # The alternate collision set, if one is selected. Registered here so the
+  # geoms below can just reference names; `hulls` stays empty for "boxes" and
+  # every branch below falls back to the fitted boxes unchanged.
+  hulls: dict[str, list[str]] = {}
+  if collision not in HAND_COLLISION_SETS:
+    raise ValueError(
+      f"collision={collision!r}; expected one of {list(HAND_COLLISION_SETS)}"
+    )
+  if collision != "boxes":
+    for part, files in _coacd_parts(collision).items():
+      names = []
+      for k, rel in enumerate(files):
+        nm = f"col_{part}_{k}"
+        mh = spec.add_mesh()
+        mh.name = nm
+        mh.file = str(COLLISION_DIR / collision / rel)
+        names.append(nm)
+      hulls[part] = names
+
   base = spec.worldbody.add_body()
   base.name = "hand_base"
   # Visual stack, with each part's pose taken from its own fixed joint rather
@@ -817,15 +893,26 @@ def _hand_spec() -> mujoco.MjSpec:
   # own fitted box covers the palm, and the adapter/shim box covers the wrist
   # stack that sweeps low on an aggressive descent.
   _add_grasp_site(base)
-  _add_collision_box(base, "palm_col", *boxes["base_link"][0])
-  wrist_half, wrist_pos = boxes["adapter"][0]
-  j_ad = cad.joints["adapter_fixed"]
-  _add_collision_box(
-    base,
-    "wrist_col",
-    wrist_half,
-    tuple(np.array(j_ad.origin) + np.array([0, 0, -wrist_pos[2]])),
-  )
+  if hulls:
+    # base_link's hulls sit in its own frame, which IS this body's frame.
+    for k, nm in enumerate(hulls["base_link"]):
+      _add_collision_mesh(base, f"palm_col{k}", nm)
+    # The adapter and shim are welded to base_link rather than being separate
+    # bodies, so their hulls are attached here too -- that is the wrist stack
+    # the box version covered with one `wrist_col`.
+    for part in ("adapter", "shim"):
+      for k, nm in enumerate(hulls.get(part, [])):
+        _add_collision_mesh(base, f"{part}_col{k}", nm)
+  else:
+    _add_collision_box(base, "palm_col", *boxes["base_link"][0])
+    wrist_half, wrist_pos = boxes["adapter"][0]
+    j_ad = cad.joints["adapter_fixed"]
+    _add_collision_box(
+      base,
+      "wrist_col",
+      wrist_half,
+      tuple(np.array(j_ad.origin) + np.array([0, 0, -wrist_pos[2]])),
+    )
   _set_inertial_full(base, cad.links["base_link"])
   # The adapter and shim are welded to base_link and are not separate bodies
   # here, so their mass has to be added or the hand comes out 56 g light.
@@ -840,8 +927,12 @@ def _hand_spec() -> mujoco.MjSpec:
     prox.pos = np.array(prox_j.origin)
     _add_finger_joint(prox, f"{side}_1", prox_j)
     _add_visual(prox, f"{side}_1", (0, 0, 0), (1, 0, 0, 0), _CLAW_BLUE)
-    for k, box in enumerate(boxes[f"{side}_1"]):
-      _add_collision_box(prox, f"{side}_1_col{k}", *box)
+    if hulls:
+      for k, nm in enumerate(hulls[f"{side}_1"]):
+        _add_collision_mesh(prox, f"{side}_1_col{k}", nm)
+    else:
+      for k, box in enumerate(boxes[f"{side}_1"]):
+        _add_collision_box(prox, f"{side}_1_col{k}", *box)
     _set_inertial_full(prox, cad.links[f"{side}_1"])
 
     dist = prox.add_body()
@@ -849,8 +940,12 @@ def _hand_spec() -> mujoco.MjSpec:
     dist.pos = np.array(dist_j.origin)
     _add_finger_joint(dist, f"{side}_2", dist_j)
     _add_visual(dist, f"{side}_2", (0, 0, 0), (1, 0, 0, 0), _CLAW_BLUE)
-    for k, box in enumerate(boxes[f"{side}_2"]):
-      _add_collision_box(dist, f"{side}_2_col{k}", *box)
+    if hulls:
+      for k, nm in enumerate(hulls[f"{side}_2"]):
+        _add_collision_mesh(dist, f"{side}_2_col{k}", nm)
+    else:
+      for k, box in enumerate(boxes[f"{side}_2"]):
+        _add_collision_box(dist, f"{side}_2_col{k}", *box)
     _set_inertial_full(dist, cad.links[f"{side}_2"])
     _add_pad_marker_at(dist, f"{side}_pad", pad_marker_pos(side), tip_marker_pos(side))
     # Touch site spans the WHOLE distal link (union of its bands), so the
@@ -1131,8 +1226,12 @@ def _apply_gravcomp(arm: mujoco.MjSpec) -> None:
       j.actgravcomp = 1
 
 
-def twofinger_arm_spec() -> mujoco.MjSpec:
-  """UNCOMPILED MjSpec: sys-id'd Rizon 4S + estimated two-finger hand."""
+def twofinger_arm_spec(collision: str = "boxes") -> mujoco.MjSpec:
+  """UNCOMPILED MjSpec: sys-id'd Rizon 4S + two-finger hand.
+
+  ``collision`` picks the hand's collision representation; see
+  HAND_COLLISION_SETS and the collision directory's README.
+  """
   arm = mujoco.MjSpec.from_file(str(_ARM_XML))
   _apply_sysid(arm)
   _add_baseplate(arm)
@@ -1151,7 +1250,7 @@ def twofinger_arm_spec() -> mujoco.MjSpec:
   for k in list(arm.keys):
     arm.delete(k)
 
-  arm.attach(_hand_spec(), suffix=_SUFFIX, site=TOOL_MOUNT_SITE)
+  arm.attach(_hand_spec(collision), suffix=_SUFFIX, site=TOOL_MOUNT_SITE)
   _strip_leading_slashes(arm)
   _apply_gravcomp(arm)
 
@@ -1317,11 +1416,11 @@ ARM_ACTUATOR_GROUP = 0
 FINGER_ACTUATOR_GROUP = 1
 
 
-def get_robot_cfg() -> EntityCfg:
+def get_robot_cfg(collision: str = "boxes") -> EntityCfg:
   """Sys-id'd Rizon 4S + two-finger hand as one loadable mjlab EntityCfg."""
   return EntityCfg(
     init_state=TWOFINGER_ARM_HOME,
-    spec_fn=twofinger_arm_spec,
+    spec_fn=lambda: twofinger_arm_spec(collision),
     articulation=TWOFINGER_ARM_ARTICULATION,
   )
 

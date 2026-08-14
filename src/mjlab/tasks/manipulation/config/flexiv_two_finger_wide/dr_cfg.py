@@ -56,6 +56,7 @@ CMD_LATENCY_DR = (os.environ.get("CG_WIDE_CMD_LATENCY_DR") or "1") != "0"
 
 _CUBE_MASS = 0.06
 _CUBE_MASS_RANGE = (0.03, 0.15)  # kg, upstream `dr_cube_mass`
+_CUBE_SCALE_RANGE = (0.9, 1.1)  # multiplier on the 50 mm half-edge
 
 # Scale bands, as multipliers, converted to alpha the same way.
 _HAND_MASS_SCALE = (0.6, 1.4)  # upstream `dr_hand_mass`
@@ -66,8 +67,20 @@ def _alpha(lo: float, hi: float) -> tuple[float, float]:
   return (0.5 * math.log(lo), 0.5 * math.log(hi))
 
 
-def add_physics_dr(cfg: ManagerBasedRlEnvCfg) -> None:
-  """Randomize what the arm and the object are made of. Mutates ``cfg``."""
+def add_physics_dr(
+  cfg: ManagerBasedRlEnvCfg,
+  cube_mass_range: tuple[float, float] | None = None,
+  cube_scale_range: tuple[float, float] | None = None,
+) -> None:
+  """Randomize what the arm and the object are made of. Mutates ``cfg``.
+
+  ``cube_mass_range`` / ``cube_scale_range`` override the defaults below. They
+  are parameters rather than module constants so a task can widen them and have
+  the widening recorded in its task id -- the same reason the collision set is
+  threaded rather than read from the environment.
+  """
+  mass_range = cube_mass_range or _CUBE_MASS_RANGE
+  scale_range = cube_scale_range or _CUBE_SCALE_RANGE
   # --- the object -----------------------------------------------------------
   # `reset` rather than `startup`: a real trial can present a different object,
   # so the mass and the friction should differ episode to episode. Everything
@@ -84,9 +97,7 @@ def add_physics_dr(cfg: ManagerBasedRlEnvCfg) -> None:
     mode="reset",
     params={
       "asset_cfg": SceneEntityCfg("cube", body_names=("cube",)),
-      "alpha_range": _alpha(
-        _CUBE_MASS_RANGE[0] / _CUBE_MASS, _CUBE_MASS_RANGE[1] / _CUBE_MASS
-      ),
+      "alpha_range": _alpha(mass_range[0] / _CUBE_MASS, mass_range[1] / _CUBE_MASS),
     },
   )
 
@@ -115,7 +126,7 @@ def add_physics_dr(cfg: ManagerBasedRlEnvCfg) -> None:
     mode="reset",
     params={
       "asset_cfg": SceneEntityCfg("cube", body_names=("cube",), geom_names=("cube",)),
-      "scale_range": (0.9, 1.1),
+      "scale_range": scale_range,
     },
   )
 
