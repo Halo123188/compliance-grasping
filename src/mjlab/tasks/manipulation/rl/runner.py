@@ -35,6 +35,14 @@ class _OnnxExportOnSaveMixin:
 
 
 class ManipulationOnPolicyRunner(_OnnxExportOnSaveMixin, MjlabOnPolicyRunner):
+  """PPO runner that exports ONNX on every checkpoint save.
+
+  The filtering of ``FinetunePPO``-only algorithm fields used to live here; it
+  is in ``MjlabOnPolicyRunner`` now, because the fields sit on the shared
+  ``RslRlPpoAlgorithmCfg`` and so every task inherited the crash, not just this
+  one.
+  """
+
   env: RslRlVecEnvWrapper
 
 

@@ -44,6 +44,13 @@ class TrainConfig:
   iteration counter at zero. The checkpoint may come from a plain PPO run: its
   ``actor_state_dict`` becomes the teacher. Independent of ``--agent.resume``,
   which resumes a distillation run (student + optimizer + teacher)."""
+  policy_checkpoint: str | None = None
+  """Path to a checkpoint whose POLICY warm-starts this run, weights only.
+
+  For fine-tuning a distilled student with PPO: the runner maps
+  ``student_state_dict`` onto the actor and leaves the critic, the optimizer and
+  the iteration counter fresh. Distinct from ``--agent.resume``, which continues
+  a run of the same kind and restores all of them."""
   gpu_ids: list[int] | Literal["all"] | None = field(default_factory=lambda: [0])
 
   @staticmethod
@@ -178,6 +185,12 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   if cfg.teacher_checkpoint is not None:
     print(f"[INFO]: Loading teacher checkpoint from: {cfg.teacher_checkpoint}")
     runner.load(cfg.teacher_checkpoint, load_cfg={"teacher": True, "iteration": False})
+  if cfg.policy_checkpoint is not None:
+    print(f"[INFO]: Warm-starting the policy from: {cfg.policy_checkpoint}")
+    runner.load(
+      cfg.policy_checkpoint,
+      load_cfg={"actor": True, "critic": False, "optimizer": False, "iteration": False},
+    )
   if resume_path is not None:
     print(f"[INFO]: Loading model checkpoint from: {resume_path}")
     runner.load(str(resume_path))

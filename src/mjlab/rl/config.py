@@ -77,6 +77,24 @@ class RslRlPpoAlgorithmCfg:
   """The optimizer to use."""
   share_cnn_encoders: bool = False
   """Share CNN encoders between actor and critic."""
+  critic_warmup_iters: int = 0
+  """Updates during which the actor is frozen and only the critic learns.
+
+  Only read by ``FinetunePPO``. Meaningless for a run that starts from scratch
+  (both models are random together) and load-bearing for one that starts from a
+  pretrained actor: the value function has never seen this policy's returns, so
+  the first advantages are noise, and they are applied to a policy that is
+  already good. 0 disables.
+  """
+  std_max: float = 0.0
+  """Hard ceiling on the policy's executed std, applied after every update.
+
+  Only read by ``FinetunePPO``. A fine-tune inherits a std chosen for the
+  distilled policy and has nothing left to explore for, while the policy
+  gradient drifts it upward regardless of ``entropy_coef`` -- measured on job
+  67480, 0.0200 -> 0.0216 over six unfrozen updates with entropy already at 0.
+  The cliff it is drifting toward is at 0.05. 0 disables.
+  """
   class_name: str = "PPO"
   """Algorithm class name resolved by RSL-RL."""
 
@@ -192,6 +210,56 @@ class RslRlDistillationAlgorithmCfg:
   from its own early mistakes every later sample is drawn from the same
   off-task distribution. The labels are the teacher's either way -- mixing
   changes which states get labelled, not what the label is.
+  """
+  relabel_achievable: bool = False
+  """Regress onto the teacher's request AFTER its rate limiter clipped it.
+
+  Only read by ``SmoothedDaggerDistillation``. The stock loss fits the student
+  to the PRE-limiter request, which on the -Slew arms is 1.5x what the servo
+  ever receives, so the student is taught a target that provably cannot be
+  executed. Behaviour-preserving: the relabelled action puts the same number on
+  the servo, so the rollout is unchanged.
+  """
+  saturation_weight: float = 0.0
+  """Weight on the STUDENT's own limiter overdrive, added to the BC loss.
+
+  Only read by ``SmoothedDaggerDistillation``. The teacher's equivalent is a
+  reward term, and distillation never reads rewards -- this is the same
+  quantity in the objective the student actually optimises.
+  """
+  action_rate_weight: float = 0.0
+  """Weight on ``||a_t - a_{t-1}||^2``, added to the BC loss.
+
+  Only read by ``SmoothedDaggerDistillation``. A behaviour-cloning loss is
+  per-timestep and cannot see temporal roughness at all: a residual that is
+  merely independent across frames produces command rate out of nothing, which
+  is what pins the student's command at the cap.
+  """
+  std_end: float = 0.0
+  """Executed exploration std to anneal the student TO. See the anneal window."""
+  std_anneal_start: int = 0
+  """Iteration at which the student's executed std starts shrinking."""
+  std_anneal_end: int = 0
+  """Iteration at which it reaches ``std_end``. ``<= start`` disables annealing.
+
+  The student's std is fixed and gets no gradient, but DAgger EXECUTES it, so it
+  is command rate injected into every rollout -- 0.4 rad/s against a 1.0 rad/s
+  cap at the current 0.02. It buys a wider labelled state distribution, which is
+  worth much less once beta has reached 0 and the student is holding its own
+  distribution anyway.
+  """
+  penalty_ramp_start: int = 0
+  """Iteration at which the two penalties above start being charged."""
+  penalty_ramp_end: int = 0
+  """Iteration at which they reach full price. ``<= start`` charges full price
+  from iteration 0.
+
+  Set this to run from the END of the DAgger handoff, not from 0. Charged flat
+  from the start, the penalties are healthy exactly as long as ``beta`` is still
+  mixing in teacher actions and destabilise training the moment it reaches 0
+  (job 65248: success oscillating 0.15-0.89 and saturation reflating past the
+  unpenalised arm). The weights are right; paying them before the student can
+  hold its own state distribution is not.
   """
 
 
