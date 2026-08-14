@@ -108,7 +108,7 @@ register_mjlab_task(
 
 
 # --- Why the grip lands high and on a corner, three candidates ---------------
-# Measured on v2_range's 3000-iter policy (scripts/diag_grasp_alignment.py, 64
+# Measured on v2_range's 3000-iter policy (the retired diag_grasp_alignment.py, 64
 # envs): the pad midpoint ends a median 17.2 mm ABOVE the cube centre -- 69% of
 # the way up a 25 mm half-height, so on the top edge -- and the jaw sits a median
 # 13.9 deg off a cube face, with 16% of episodes past 30 deg, nearer a corner
@@ -204,7 +204,7 @@ register_mjlab_task(
 # midpoint, jaw yaw -- and each proxy turned out to be satisfiable with the
 # fingertips nowhere near the cube. The pad-plane theory that motivated the
 # `Align` arms was wrong on top of that: measured on the mesh
-# (scripts/diag_finger_shape.py), the finger is a hook whose tuned tip site
+# (the retired diag_finger_shape.py), the finger is a hook whose tuned tip site
 # reaches the cube by SPREADING the proximal and CURLING the distal, and the
 # `Range` limits below cap the distal at -0.85, which blocks exactly that.
 #
@@ -405,7 +405,7 @@ register_mjlab_task(
 
 
 # --- Three arms off TouchCalmAlign (36% success), one change each -------------
-# Failure analysis of run 46984 (scripts/diag_failure_modes.py, 64 envs,
+# Failure analysis of run 46984 (the retired diag_failure_modes.py, 64 envs,
 # deterministic policy): 81% succeed, and NOTHING fails from losing the grasp --
 # dropped, slipped-early, knocked-away and never-gripped are all exactly 0. Every
 # failure is a lift that comes up short, and yaw error is the discriminator:

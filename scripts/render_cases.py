@@ -48,6 +48,7 @@ from mjlab.viewer.viewer_config import ViewerConfig
 
 sys.path.insert(0, str(Path(__file__).parent))
 from tools.task_geometry import TaskGeometry, geometry_for  # noqa: E402
+from tools.video_out import video_path  # noqa: E402
 
 ARGV = sys.argv[1:]
 MODE = "drive"
@@ -57,7 +58,7 @@ if ARGV and ARGV[0] == "--select":
 elif ARGV and ARGV[0] == "--clip":
   MODE, CLIP_IDX, ARGV = "clip", int(ARGV[1]), ARGV[2:]
 
-OUTDIR = Path(ARGV[0])
+OUTDIR = video_path(ARGV[0], is_dir=True)
 SPECS = ARGV[1:]
 N, STEPS, DEV = 128, 300, "cuda:0"
 HOLD_STEPS = 50
@@ -275,7 +276,6 @@ def do_clip(name: str, task: str, ckpt: str, case: str, idx: int) -> int:
 
 
 if MODE == "drive":
-  OUTDIR.mkdir(parents=True, exist_ok=True)
   drive()
 else:
   _name, _rest = SPECS[0].split("=", 1)

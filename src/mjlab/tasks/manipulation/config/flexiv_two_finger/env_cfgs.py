@@ -152,7 +152,7 @@ def _robot_cfg(finger_range: FingerRange | None) -> EntityCfg:
   well inward to grip -- the pull-out-test pose is left_2 = -0.40, and the
   distals only meet near -0.85 -- so reusing the proximal's -0.20 here would put
   the one grasp this hand is known to hold with outside the action space.
-  Measured by scripts/diag_hand_limits.py.
+  Measured by the retired diag_hand_limits.py.
   """
   cfg = get_two_finger_hand_robot_cfg()
   if finger_range is None:
@@ -259,7 +259,7 @@ def _apply_common(
       # Sizing is set by the cube's DIAGONAL, not its face: yaw is randomized
       # over the full circle, so at 45 deg the cube presents 50*sqrt(2) =
       # 70.7 mm. Jaw gap at curl -0.40, measured on the real mesh colliders by
-      # scripts/diag_hover_pose.py:
+      # the retired diag_hover_pose.py:
       #   +0.20 -> 41.6 | +0.30 -> 56.2 | +0.40 -> 70.7 | +0.50 -> 85.1
       #   +0.60 -> 99.2 | +0.70 -> 112.9 | +0.90 -> 138.4
       # +0.50 clears the diagonal by 14.4 mm (7.2 mm per side). +0.40 is exactly

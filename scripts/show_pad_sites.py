@@ -18,7 +18,7 @@ import mujoco
 import numpy as np
 
 XML = "/home/yiboc/compliance-grasping/exports/two_finger_grasp_scene/scene.xml"
-OUT = "/work/yiboc/pad_sites.png"
+OUT = "videos/pad_sites.png"
 
 m = mujoco.MjModel.from_xml_path(XML)
 m.opt.timestep = 0.005

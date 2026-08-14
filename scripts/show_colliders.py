@@ -11,7 +11,7 @@ import imageio.v2 as imageio
 import mujoco
 import numpy as np
 
-OUT = Path(sys.argv[1] if len(sys.argv) > 1 else "/work/yiboc")
+OUT = Path(sys.argv[1] if len(sys.argv) > 1 else "videos/colliders_oldclaw")
 XML = "/home/yiboc/compliance-grasping/assets/two_finger_hand/two_finger_hand.xml"
 
 m = mujoco.MjModel.from_xml_path(XML)

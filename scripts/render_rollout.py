@@ -21,8 +21,10 @@ from mjlab.viewer.viewer_config import ViewerConfig
 
 sys.path.insert(0, str(Path(__file__).parent))
 from tools.task_geometry import geometry_for  # noqa: E402
+from tools.video_out import video_path  # noqa: E402
 
-TASK, CKPT, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
+TASK, CKPT = sys.argv[1], sys.argv[2]
+OUT = video_path(sys.argv[3])
 # The surface heights are read off the TASK: the wide-claw bench measures cube
 # rise from the top of 50 mm of foam, the old one from the table top.
 _GEO = geometry_for(TASK)
@@ -101,6 +103,5 @@ _, frames = rollout(env2, wrapped2, policy2, render=True)
 env2.close()
 
 frames = [f for f in frames if f is not None]
-Path(OUT).parent.mkdir(parents=True, exist_ok=True)
 imageio.mimwrite(OUT, frames, fps=30, quality=8)
 print(f"wrote {len(frames)} frames -> {OUT}")

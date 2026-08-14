@@ -14,7 +14,7 @@ import mujoco
 import numpy as np
 
 XML = "/home/yiboc/compliance-grasping/exports/two_finger_grasp_scene/scene.xml"
-OUT = sys.argv[1] if len(sys.argv) > 1 else "/work/yiboc/oracle_grasp.mp4"
+OUT = sys.argv[1] if len(sys.argv) > 1 else "videos/oracle_grasp.mp4"
 TABLE, CH = 0.40, 0.025  # table top, cube half-extent (50 mm cube)
 JAW_OPEN, JAW_GRIP = 0.60, 0.00  # left_1: 72.8 mm open; 0.10 -> 40 mm nominal,
 # i.e. ~10 mm of interference on the 50 mm cube so the fingers actually squeeze

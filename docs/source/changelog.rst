@@ -8,6 +8,90 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- Added ``scripts/wide_eval_sweep.py`` and ``scripts/wide_plot_sweep.py``, which
+  split a policy's single deployment success number by object SIZE and by WHERE
+  on the bench the object spawned. ``eval_deploy`` averages over the whole
+  training distribution at once, so three of the four round-1/round-2 students
+  score 96-100% there and none of that says where the remaining failures live.
+  The sweep pins the cube to one edge length at a time (15-60 mm, deliberately
+  outside every policy's trained range at both ends) and then to one cell of the
+  spawn box at a time, driving both by mutating the live cfg between rollouts so
+  the scene compile and the checkpoint load happen once per policy rather than
+  once per point. It records per-episode rows including the whole height trace,
+  because the task's success bar is an ABSOLUTE height of the cube centre and so
+  asks a 15 mm cube for 92.5 mm of climb against a 60 mm cube's 70 -- the plot
+  scores both that bar and a size-fair one, and they agree, which is what rules
+  the metric out as the explanation for the small-cube cliff.
+  ``box=x0,x1,y0,y1`` sweeps the position grid over the WHOLE bench rather than
+  the trained spawn box, where the limit stops being the policy: past the D435's
+  cone the student is looking at an empty table, and past ~720 mm the arm needs
+  more than 1.5 sigma of action to get there. The figure draws both boundaries
+  from ``wide_spawn_gate.feasibility_map`` so a dead cell can be read as blind or
+  out of reach rather than as a policy that cannot grasp there.
+- Added ``size_privileged`` to ``flexiv_two_finger_distill_env_cfg`` and the two
+  arms it registers,
+  ``Mjlab-Grasp-TwoFingerWide-Flexiv-Distill-Depth-R2-{Reach,Small}-SizeBlind``.
+  ``observe_object_size`` was added for the TEACHER, which reads privileged state
+  by definition, and the student inherited it only because ``_PRIVILEGED_TERMS``
+  predates the term -- so the round-2 students are handed the exact half-edge of
+  the cube they are meant to be looking at, at zero noise under ``play``, and
+  their small-object result answers "can it grasp a 15 mm cube it has been TOLD
+  is 15 mm" rather than "can it read the size off the image". The new arms
+  withhold it; everything else, the teacher's ``actor`` group included, is
+  unchanged, so both distil from the same R2 checkpoints and the pair prices what
+  reading size off a 160x120 depth image is worth. It is a task parameter rather
+  than an edit to ``_PRIVILEGED_TERMS`` because it changes the student's
+  observation WIDTH (35 dimensions to 34): editing the constant would orphan
+  every student already on disk instead of putting the difference in the task id.
+  The new width is the one ``deploy/policy.py`` already assembles.
+- Added ``wide_spawn_gate.feasibility_map``, the per-pose form of the gate's
+  camera and reach checks (the gate itself reduces it to a worst case), so the
+  evaluation figures draw the same limits the gate enforces rather than a second
+  implementation of them.
+- Added PPO fine-tuning of an already-distilled camera student:
+  ``ManipulationFinetuneRunner`` warm-starts a PPO actor from a distillation
+  checkpoint's ``student_state_dict``, and ``FinetunePPO`` adds
+  ``critic_warmup_iters`` (hold the actor still while the fresh critic fits the
+  returns of a policy that is not moving) and ``std_max`` (clamp the executed
+  std, which the policy gradient inflates even at ``entropy_coef`` 0, and whose
+  cliff on this task is measured: 0.02 → 97.8% lifted, 0.05 → 42.5%). The point
+  is that behaviour cloning is per-timestep and so cannot price temporal
+  roughness at all -- a student sitting a steady 1.6° off and one alternating
+  ±1.6° score identically -- while the smoothness rewards that made the teacher
+  smooth are already computed on every distillation step and thrown away.
+  Registered as
+  ``Mjlab-Grasp-TwoFingerWide-Flexiv-Finetune-Depth-Success-Dr-FaceLevel``,
+  whose env drops the ``cube_lifted`` termination so that holding the cube keeps
+  paying; without that the policy is better off hovering than grasping.
+- Added ``SmoothedJointPositionActionCfg``, a joint position action that bounds
+  how fast the *command* may move: a hard slew cap in rad/s (``rate_limit``), a
+  first-order low-pass time constant in seconds (``ema_tau``), or both. Both are
+  in physical units and integrated at the physics timestep, so they mean the same
+  thing at any ``decimation`` and can be mirrored on the robot host at any publish
+  rate. ``action_rate_limit_curriculum`` scales the cap over training.
+- Added ``scripts/wide_speed_audit.py``, which reports a policy's joint
+  velocities, published and requested command rates, and tool-point speed, split
+  by approach-versus-carry phase, with a table of what each candidate limit would
+  clip.
+- Added the wide-claw speed arms ``Mjlab-Grasp-TwoFingerWide-Flexiv-Success-Dr-{Slew,SlewTight,SlewCurr,Slow,Ema}``
+  and their matching ``-Distill-Depth-`` students. ``Slew``/``SlewTight``/``SlewCurr``
+  cap the commanded rate, ``Ema`` low-passes it, and ``Slow`` leaves the action
+  space alone and tightens the velocity penalty instead.
+- Added ``action_saturation_penalty`` and ``smoothed_action_command``, the two
+  halves of keeping a policy off its own rate limiter. A slew cap bounds speed
+  but not direction changes, and saturating it is a degeneracy: past the cap
+  only the sign of ``target - cmd`` reaches the simulation, so the request
+  magnitude stops receiving gradient, drifts outward, and the joint settles into
+  bang-bang chatter. The reward charges for the overdrive (dimensionless, in
+  units of the cap, so a cap curriculum does not rescale it); the observation
+  exposes ``q_cmd``, the limiter state the policy was previously fighting blind.
+  ``SmoothedJointPositionAction`` gained ``command`` and ``saturation``
+  properties to feed them.
+- Added the anti-chatter arms
+  ``Mjlab-Grasp-TwoFingerWide-Flexiv-Success-Dr-{SatPen,CmdObs,Fix,FixRate,FixWeak}``
+  and their matching ``-Distill-Depth-`` students, all on SlewCurr's cap and
+  schedule. The ones that observe the command run at 54 observation dimensions
+  rather than 43 and so cannot warm-start from an existing checkpoint.
 - Added ``reduce="max"`` to ``MetricsTermCfg`` for reporting episode-peak values
   (e.g. peak power, peak contact force) without needing stateful wrapper classes.
 - Added ``BuiltinDcMotorActuator``, a native MuJoCo ``<dcmotor>`` wrapper.
@@ -264,6 +348,31 @@ Added
 Changed
 ^^^^^^^
 
+- Every rendered clip and still now resolves its output through
+  ``scripts/tools/video_out.py`` and lands under ``videos/``. Renders had been
+  going to ``/work/yiboc``, ``/work/yiboc/videos``, ``/work/yiboc/renders`` and
+  ``~/cg-logs`` at the same time, so 130 MB of clips sat outside the repo on a
+  filesystem that is not backed up with it, and "the video of the best policy"
+  had no single place to be. A relative path resolves against ``videos/`` --
+  ``render_student.py R2-Small-SB`` and ``render_student.py videos/R2-Small-SB``
+  mean the same thing -- and an absolute path elsewhere still works but warns,
+  because a one-off render to ``/tmp`` is legitimate and scattering the archive
+  again by accident is not.
+- Removed 32 retired diagnostic scripts, all of them written against the OLD
+  two-finger claw and none of them reachable from the wide-claw line. The five
+  still cited from live code are kept (``diag_joint7_use``, ``diag_student_view``
+  and ``diag_success_metric`` from the wide config, ``diag_wrist_sign`` from
+  ``manipulation/mdp/actions.py``, ``diag_teacher_actions`` from this file);
+  where a deleted script was the only citation for a measured constant in the
+  retired old-claw config, the citation is marked ``retired`` rather than left
+  pointing at a file that is gone. The measurements themselves are in the
+  comments and are untouched.
+- ``deploy/`` now applies the same command smoothing the policy trained under,
+  set by ``calib.RATE_LIMIT`` / ``calib.EMA_TAU``. These must match the
+  checkpoint: a policy trained behind a slew cap learns to lean on it, asking for
+  a target rate up to 17x (and on the tightest arm 50x) what the limiter
+  publishes, so running such a checkpoint without the limiter is a full-speed
+  command rather than a slightly faster one.
 - Bumped ``rsl-rl-lib`` from 5.2.0 to 5.4.0.
 - Curriculum-mode terrain difficulty is now deterministic across rows
   and reaches the configured ``difficulty_range`` endpoints
@@ -282,6 +391,53 @@ Changed
 Fixed
 ^^^^^
 
+- ``scripts/wide_scene_shot.py`` no longer asserts at env build time on a task
+  with ``percept_dr``. It set the D435's ``data_types`` to ``("rgb", "depth")``,
+  which drops the ``segmentation`` stream that ``camera_depth``'s surface
+  blinding needs; it now ADDS ``rgb`` to whatever the task asked for, the same
+  way ``render_student.py`` does.
+- ``scripts/wide_spawn_gate.py`` now FAILS a spawn box containing a pose the arm
+  cannot reach at all. A pose whose IK did not converge was skipped, so it never
+  entered the worst-case reach number and a box could pass on the strength of the
+  poses that did converge -- the reverse of what the gate is for. It also no
+  longer parses ``sys.argv`` at import time, which made the first argument of any
+  script importing it get read as a box half-width.
+- The fine-tuned actor's ``EmpiricalNormalization`` is now frozen at the count
+  it carried out of distillation. Its statistics live in buffers, so
+  ``requires_grad_(False)`` does not reach them and PPO updated them from every
+  rollout regardless of the critic warm-up. The student observation feeds its
+  own raw action back as dims 22-32, the rate limiter leaves that action's
+  magnitude without gradient, and the resulting drift inflated those eleven
+  standard deviations by up to 13× while joint position and velocity did not
+  move at all. Normalizing divides by that std, so the policy's action-feedback
+  channel was flattened toward zero under a warm-started policy that depends on
+  it. Measured: a run healthy for 60 iterations (better ``lift_hold`` than the
+  distilled student it started from) lost the cube at iteration 65 and never
+  recovered, finishing at 0.0% deployed success; the same configuration with the
+  normalizer pinned reaches 99.2%. The distilled statistics are the ones the
+  student's weights were fitted against, so they are what to keep. The critic's
+  normalizer is deliberately left learning -- it starts from nothing. The
+  student's ``actions`` observation is now clipped to ±5 as well, which is a
+  no-op on the trained range and is required *because* of the freeze: with the
+  std pinned, a runaway action would otherwise reach the network unattenuated.
+- ``scripts/render_student.py`` now picks which weights to load by inspecting
+  the checkpoint rather than assuming ``student_state_dict``. Asking a PPO
+  checkpoint -- which is what fine-tuning a student produces -- for a key it
+  does not have was a silent no-op, so the network stayed at its random
+  initialization and a 99.2% policy rendered as one that never lifts anything.
+  An unrecognized checkpoint now raises. The script also prints the failure env
+  indices alongside the success ones, without which ``env=N`` cannot be pointed
+  at a failing episode, and its docstring records that near the grasp boundary
+  a re-render does not drift by the documented 25 mm but flips outright.
+- ``scripts/render_student.py`` no longer fails to build the wide-claw env. It
+  added the RGB video panel by overwriting the camera's ``data_types``, which
+  dropped the ``segmentation`` buffer that ``camera_depth``'s surface-blinding
+  randomization requires; it now appends to the tuple instead. It also gained
+  ``n=`` to widen the selection pool, needed because a policy that fails 2% of
+  the time yields too few failure candidates in 64 envs to survive a re-render.
+- ``scripts/diag_teacher_actions.py`` now reads the actor off a PPO runner
+  instead of ``runner.alg.teacher``, which only exists on the distillation
+  runner and made the script raise on every teacher checkpoint.
 - The wide-claw D435 no longer renders its own housing. ``enabled_geom_groups``
   dropped from the default ``(0, 1, 2)`` to ``(0, 1)``; on this model group 2
   holds the D435i's nine visual meshes and nothing else. The lens sits inside

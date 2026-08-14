@@ -39,8 +39,9 @@ from mjlab.viewer.viewer_config import ViewerConfig
 sys.path.insert(0, str(Path(__file__).parent))
 from tools.depth_view import colorize_depth  # noqa: E402
 from tools.task_geometry import geometry_for  # noqa: E402
+from tools.video_out import video_path  # noqa: E402
 
-OUTDIR = Path(sys.argv[1])
+OUTDIR = video_path(sys.argv[1], is_dir=True)
 TASK = (
   sys.argv[2]
   if len(sys.argv) > 2
@@ -88,9 +89,15 @@ def build():
   # Colour as well as depth, without touching the observation group -- the same
   # trick render_student.py uses. No policy is loaded here, but keeping the
   # observation 1-channel keeps this still honest about what the net receives.
+  #
+  # ADD rgb, do not REPLACE the tuple. A task with `percept_dr` also asks for
+  # 'segmentation', which is not an observation but feeds `camera_depth`'s
+  # surface-blinding DR; overwriting data_types with ("rgb", "depth") drops it
+  # and the obs term asserts at env build time. That is what job 75157 hit on
+  # the SizeBlind task -- "Camera 'd435' has no segmentation data".
   for sensor in cfg.scene.sensors or ():
     if isinstance(sensor, CameraSensorCfg) and sensor.name == "d435":
-      sensor.data_types = ("rgb", "depth")
+      sensor.data_types = tuple(dict.fromkeys((*sensor.data_types, "rgb")))
   cfg.viewer = ViewerConfig(
     origin_type=ViewerConfig.OriginType.ASSET_ROOT,
     entity_name="robot",
@@ -183,7 +190,6 @@ def grid(images, cols: int, pad: int = 6) -> Image.Image:
   return canvas
 
 
-OUTDIR.mkdir(parents=True, exist_ok=True)
 torch.manual_seed(0)
 env = build()
 env.reset()

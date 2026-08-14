@@ -40,6 +40,22 @@ under the "Upcoming version (not yet released)" section using
 Added/Changed/Fixed categories. Reference issues with `:issue:\`123\``
 (renders as a link to the GitHub issue).
 
+# Rendered output
+
+Every rendered clip and still goes under `videos/` in this repo. Nothing is
+written to `/work/yiboc`, `/tmp` or a home directory: renders used to land in
+four places at once, and 130 MB of clips ended up outside the repo on a
+filesystem that is not backed up with it.
+
+Scripts resolve their output through `scripts/tools/video_out.py`. A relative
+path resolves against `videos/`, so `render_student.py R2-Small-SB` and
+`render_student.py videos/R2-Small-SB` mean the same thing, and an absolute
+path outside `videos/` still works but warns. Use it in any new render script
+rather than building a path by hand.
+
+`videos/` is gitignored, so nothing there is recoverable once deleted --
+confirm before removing clips.
+
 # Commits and PRs
 
 - Put `Fixes #<number>` at the end of the commit message body, not in

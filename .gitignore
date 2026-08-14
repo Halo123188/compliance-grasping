@@ -19,11 +19,12 @@ benchmark_results/
 **/_build/*
 **/generated/*
 
-# Standalone MuJoCo scene bundles (regenerate with scripts/export_scene.py)
+# Standalone MuJoCo scene bundles (regenerate with `uv run export-scene`)
 exports/
 
 # Rendered diagnostics, rollouts and scene previews. All regenerable from
-# scripts/render_*.py and scripts/export_scene.py; none of it is input.
+# scripts/render_*.py and `uv run export-scene`; none of it is input.
+# Rendered clips and stills go under videos/ -- see CLAUDE.md.
 viz/
 scenes/**/*.png
 assets/**/preview/

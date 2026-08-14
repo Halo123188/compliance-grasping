@@ -2,8 +2,8 @@
 
   uv run python scripts/diag_student_view.py [TASK] [OUT.png]
 
-`scripts/render_scene.py` renders the D435 through MuJoCo's offscreen renderer
-at full resolution. That is not the student's input. The student gets the
+`scripts/wide_scene_shot.py` renders the D435 through MuJoCo's offscreen
+renderer at full resolution. That is not the student's input. The student gets the
 observation manager's output: 128x72, depth clipped to 3 m and divided by it,
 or RGB divided by 255. A cube that is obvious in the render can be four pixels
 and half a millimetre of depth contrast in the tensor, which is the difference

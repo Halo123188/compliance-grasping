@@ -79,7 +79,7 @@ def _rgb(depth: np.ndarray, vmin: float, vmax: float) -> np.ndarray:
 
 
 def main() -> None:
-  out = Path(sys.argv[1] if len(sys.argv) > 1 else "depth_dr.png")
+  out = Path(sys.argv[1] if len(sys.argv) > 1 else "videos/depth_dr.png")
   n = next(
     (int(a.split("=")[1]) for a in sys.argv[2:] if a.startswith("envs=")),
     6,
