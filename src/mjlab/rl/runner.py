@@ -1,11 +1,77 @@
+import inspect
 import os
 from pathlib import Path
 
 import torch
 from rsl_rl.env import VecEnv
 from rsl_rl.runners import DistillationRunner, OnPolicyRunner
+from rsl_rl.utils import resolve_callable
 
 from mjlab.rl.vecenv_wrapper import RslRlVecEnvWrapper
+
+# Fields declared on the shared `RslRlPpoAlgorithmCfg` that only a PPO SUBCLASS
+# reads; see their docstrings in mjlab.rl.config. Stock `PPO` raises on them.
+#
+# They live on the shared cfg because every PPO-family run here is configured
+# through one dataclass, and they are filtered HERE -- in the shared runner --
+# rather than in the one task that introduced them, because every task inherits
+# the cfg and so every task inherits the crash. Filtering in
+# `ManipulationOnPolicyRunner` alone left the velocity and tracking runners
+# dying on construction with
+# ``unexpected keyword argument 'critic_warmup_iters'``.
+_SUBCLASS_ONLY_ALGORITHM_FIELDS = ("critic_warmup_iters", "std_max")
+
+
+def drop_unsupported_algorithm_fields(train_cfg: dict) -> dict:
+  """Drop algorithm fields the algorithm cannot take, IN PLACE.
+
+  The filter is against the algorithm class's OWN signature, so a subclass that
+  does accept these fields still receives them -- dropping them from the cfg
+  instead would silently disable the feature for the runs that want it.
+
+  In place, and returning the same object, on purpose. rsl_rl mutates
+  ``train_cfg["algorithm"]`` itself (``resolve_symmetry_config`` injects
+  non-serializable objects into it, which is why ``train.py`` dumps the config
+  files BEFORE constructing the runner -- see mjlab issue #764). Handing it a
+  filtered COPY would quietly break that contract: the caller's dict would stop
+  being the one the runner works on. Nothing is lost from the record, because
+  the dump already happened by the time this runs.
+  """
+  alg_cfg = train_cfg.get("algorithm", {})
+  # `class_name` is a STRING in the cfg; resolve it the way rsl_rl's own runner
+  # does rather than guessing, or the filter silently never fires and the
+  # original TypeError comes back.
+  name = alg_cfg.get("class_name")
+  if not isinstance(name, str):
+    return train_cfg
+  try:
+    cls = resolve_callable(name)
+  except Exception:
+    return train_cfg
+  if not isinstance(cls, type):
+    return train_cfg
+
+  accepted = inspect.signature(cls.__init__).parameters
+  if any(p.kind is p.VAR_KEYWORD for p in accepted.values()):
+    return train_cfg
+
+  # ONLY the subclass-only fields. A blanket "drop anything __init__ does not
+  # take" also removes `share_cnn_encoders`, which rsl_rl's
+  # `construct_algorithm` pops for ITSELF before calling __init__ -- so
+  # filtering that here would silently stop the actor and critic sharing a CNN
+  # encoder, with nothing to show for it but a worse run.
+  dropped = [
+    k for k in _SUBCLASS_ONLY_ALGORITHM_FIELDS if k in alg_cfg and k not in accepted
+  ]
+  if not dropped:
+    return train_cfg
+  print(
+    f"[runner] {cls.__name__} does not accept {dropped}; ignoring."
+    " These are PPO-subclass-only settings on the shared PPO cfg."
+  )
+  for key in dropped:
+    del alg_cfg[key]
+  return train_cfg
 
 
 class MjlabOnPolicyRunner(OnPolicyRunner):
@@ -32,6 +98,7 @@ class MjlabOnPolicyRunner(OnPolicyRunner):
         if train_cfg[key].get("rnn_type") is None:
           for opt in ("rnn_type", "rnn_hidden_dim", "rnn_num_layers"):
             train_cfg[key].pop(opt, None)
+    train_cfg = drop_unsupported_algorithm_fields(train_cfg)
     super().__init__(env, train_cfg, log_dir, device)
 
   def export_policy_to_onnx(
