@@ -33,6 +33,7 @@ Quick headless check (build + DOF, no server):
 
 from __future__ import annotations
 
+import functools
 import os
 import sys
 from pathlib import Path
@@ -865,7 +866,7 @@ def main() -> None:
   hand_only = "--hand-only" in sys.argv
   if hand_only:
     closure = "coupled" if coupled else "weld"
-    builder = lambda: build_hand_only(closure)
+    builder = functools.partial(build_hand_only, closure)
     welded = closure == "weld"  # drives the live weld-alignment panel + stats
   elif welded:
     builder = build_model_welded

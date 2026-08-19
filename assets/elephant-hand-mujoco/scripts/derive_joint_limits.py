@@ -144,7 +144,7 @@ def report_aperture_calibration(curl_res):
   / closed(0mm) calibration anchors, AND a 3-finger SYNCHRONOUS aperture map."""
   print("\n===== APERTURE CALIBRATION (per-finger feasible band) =====", flush=True)
   feas = {}
-  for name, (inp0, rows) in curl_res.items():
+  for name, (_inp0, rows) in curl_res.items():
     good = [(u, ap, w) for (u, ap, w, fin) in rows if fin and w <= WELD_THRESH_MM]
     us = np.array([g[0] for g in good])
     aps = np.array([g[1] for g in good])
@@ -267,11 +267,6 @@ def _finger_geom_sets(mjm):
     bi = V._attached_id(mjm, mujoco.mjtObj.mjOBJ_BODY, bn)
     if bi >= 0:
       pg += [g for g in range(mjm.ngeom) if mjm.geom_bodyid[g] == bi]
-  # tip geoms (the most distal, most likely to collide)
-  tipg = {
-    f["name"]: [V._attached_id(mjm, mujoco.mjtObj.mjOBJ_BODY, f["tip"])]
-    for f in V.WELD_FINGERS
-  }
   return fg, pg
 
 
@@ -399,7 +394,7 @@ def main():
   print(f"WELD model: nq={mjm.nq} nu={mjm.nu} neq={mjm.neq}", flush=True)
 
   curl_res = sweep_curl(mjm, mjd, tg, lo=-1.4, hi=1.4, n=29, settle=150)
-  feas = report_aperture_calibration(curl_res)
+  report_aperture_calibration(curl_res)
   sync_rows, inp0 = sweep_curl_sync(mjm, mjd, tg, lo=-0.9, hi=1.6, n=26, settle=180)
 
   # feasible curl band per finger (from per-finger sweep, relative to assembly)

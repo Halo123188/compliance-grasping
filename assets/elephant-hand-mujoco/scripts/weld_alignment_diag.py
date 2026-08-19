@@ -102,7 +102,7 @@ def sweep_model(mjm, mjd, label, per_target_rows=False):
         f"  -- {f['name']} (input {inputs[0]:+.3f}..{inputs[-1]:+.3f} rad) --",
         flush=True,
       )
-      for u, s in zip(inputs, seps):
+      for u, s in zip(inputs, seps, strict=False):
         stable = "ok" if s < 0.5 else ("hi" if s < 2 else "DRIFT")
         print(f"      input={u:+.4f} rad  align={s:7.4f} mm  [{stable}]", flush=True)
   return results

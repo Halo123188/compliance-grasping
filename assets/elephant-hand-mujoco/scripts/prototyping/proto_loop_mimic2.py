@@ -104,10 +104,18 @@ for f in FINGERS:
   x_prev = np.zeros(len(passive))
   for iv in grid:
 
-    def resid(x):
+    def resid(
+      x,
+      inp_adr=inp_adr,
+      iv=iv,
+      passive_adrs=passive_adrs,
+      f=f,
+      tpos=tpos,
+      tquat=tquat,
+    ):
       mujoco.mj_resetData(m, d)
       d.qpos[inp_adr] = iv
-      for a, v in zip(passive_adrs, x):
+      for a, v in zip(passive_adrs, x, strict=False):
         d.qpos[a] = v
       mujoco.mj_forward(m, d)
       rp, rq = body_rel(f["b1"], f["b2"])
@@ -122,11 +130,11 @@ for f in FINGERS:
     if np.linalg.norm(resid(sol.x)) < 1e-4:
       x_prev = sol.x
       valid.append(iv)
-      for j, v in zip(passive, sol.x):
+      for j, v in zip(passive, sol.x, strict=False):
         cols[j].append(v)
       mujoco.mj_resetData(m, d)
       d.qpos[inp_adr] = iv
-      for a, v in zip(passive_adrs, sol.x):
+      for a, v in zip(passive_adrs, sol.x, strict=False):
         d.qpos[a] = v
       mujoco.mj_forward(m, d)
       tips.append(d.xpos[bid(f["tip"])].copy())

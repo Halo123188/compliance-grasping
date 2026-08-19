@@ -111,10 +111,18 @@ for f in FINGERS:
   x_prev = np.zeros(len(passive))
   for bv in base_grid:
 
-    def resid(x):
+    def resid(
+      x,
+      base_adr=base_adr,
+      bv=bv,
+      passive_adrs=passive_adrs,
+      f=f,
+      tpos=tpos,
+      tquat=tquat,
+    ):
       mujoco.mj_resetData(m, d)
       d.qpos[base_adr] = bv
-      for adr, v in zip(passive_adrs, x):
+      for adr, v in zip(passive_adrs, x, strict=False):
         d.qpos[adr] = v
       mujoco.mj_forward(m, d)
       rp, rq = body_rel(f["b1"], f["b2"])
@@ -130,7 +138,7 @@ for f in FINGERS:
     if cost < 1e-4:
       x_prev = sol.x
       valid_base.append(bv)
-      for j, v in zip(passive, sol.x):
+      for j, v in zip(passive, sol.x, strict=False):
         curves[j].append(v)
   valid_base = np.array(valid_base)
   results[f["name"]] = (valid_base, curves, passive)

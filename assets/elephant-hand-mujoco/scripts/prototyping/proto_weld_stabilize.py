@@ -326,10 +326,7 @@ def sweep_input(m, f, gravity=True, lo=-0.6, hi=1.2, n=25, settle=60):
   q0 = q_assembly(m)
   d.qpos[:] = q0
   mujoco.mj_forward(m, d)
-  base_jn, inp_jn = f["base"], f["input"]
-  ai_base = mujoco.mj_name2id(
-    m, mujoco.mjtObj.mjOBJ_ACTUATOR, f"act_{base_jn}".replace(" ", "_")
-  )
+  inp_jn = f["input"]
   ai_inp = mujoco.mj_name2id(
     m, mujoco.mjtObj.mjOBJ_ACTUATOR, f"act_{inp_jn}".replace(" ", "_")
   )

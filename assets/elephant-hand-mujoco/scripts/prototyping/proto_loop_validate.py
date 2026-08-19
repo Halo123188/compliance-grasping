@@ -232,7 +232,6 @@ def main():
     tip_positions = []
     max_res = 0.0
     finite = True
-    loop_jn_record = []
     for target in sweep:
       d.ctrl[ai] = target
       for _ in range(60):
@@ -249,8 +248,6 @@ def main():
       path = np.sum(np.linalg.norm(np.diff(tip_positions, axis=0), axis=1)) * 1000
     else:
       travel = path = 0.0
-    # how much did each non-driven loop joint move (proves coupling)?
-    passive = [j for j in f["loop"] if j != base_jn]
     print(
       f"{f['name']}: finite={finite}  tip travel(net)={travel:.1f} mm  "
       f"path len={path:.1f} mm  max|efc_pos|={max_res * 1000:.3f} mm",

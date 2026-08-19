@@ -30,7 +30,7 @@ def eval_cfg(cfg, settle=120, label=""):
     rows.append((f["name"], align.max(), align.mean(), finite))
     worst = max(worst, align.max())
   print(f"[{label}] worst-align={worst:.4f}mm finite={finite_all}", flush=True)
-  for n, mx, mn, fin in rows:
+  for n, mx, mn, _fin in rows:
     if mx is None:
       print(f"    {n}: DIVERGED", flush=True)
     else:

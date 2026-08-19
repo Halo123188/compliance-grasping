@@ -48,7 +48,7 @@ for a, b, drv in FINGERS:
   best = (1e9, None)
   for combo in itertools.product(grid, repeat=len(drv)):
     mujoco.mj_resetData(m, d)
-    for jn, v in zip(drv, combo):
+    for jn, v in zip(drv, combo, strict=False):
       d.qpos[jadr(jn)] = v
     mujoco.mj_forward(m, d)
     g = np.linalg.norm(d.xpos[bid(a)] - d.xpos[bid(b)])

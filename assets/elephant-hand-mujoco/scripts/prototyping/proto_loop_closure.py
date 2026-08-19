@@ -11,6 +11,7 @@ Run: /home/alok/.conda/envs/g313/bin/python scripts/proto_loop_closure.py
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import mujoco
@@ -131,9 +132,9 @@ for f in FINGERS:
   tpos, tquat = targets[f["name"]]
   loop_adrs = [jadr(j) for j in f["loop"]]
 
-  def resid(x, loop_adrs=loop_adrs, tpos=tpos, tquat=tquat):
+  def resid(x, loop_adrs=loop_adrs, tpos=tpos, tquat=tquat, f=f):
     mujoco.mj_resetData(m, d)
-    for adr, v in zip(loop_adrs, x):
+    for adr, v in zip(loop_adrs, x, strict=False):
       d.qpos[adr] = v
     mujoco.mj_forward(m, d)
     rp, rq = body_rel(f["b1"], f["b2"], d)
@@ -165,16 +166,16 @@ for f in FINGERS:
   x = best[1]
   # report final residual decomposed
   mujoco.mj_resetData(m, d)
-  for adr, v in zip(loop_adrs, x):
+  for adr, v in zip(loop_adrs, x, strict=False):
     d.qpos[adr] = v
   mujoco.mj_forward(m, d)
   rp, rq = body_rel(f["b1"], f["b2"], d)
   pos_err_mm = np.linalg.norm(rp - tpos) * 1000
   rot_err_deg = np.degrees(quat_geodesic(rq, tquat))
-  assembly[f["name"]] = {j: float(v) for j, v in zip(f["loop"], x)}
+  assembly[f["name"]] = {j: float(v) for j, v in zip(f["loop"], x, strict=False)}
   print(
     f"{f['name']}: loop angles (rad) = "
-    + ", ".join(f"{j}={v:.4f}" for j, v in zip(f["loop"], x)),
+    + ", ".join(f"{j}={v:.4f}" for j, v in zip(f["loop"], x, strict=False)),
     flush=True,
   )
   print(
@@ -183,6 +184,4 @@ for f in FINGERS:
   )
 
 print("\nassembly dict:")
-import json
-
 print(json.dumps(assembly, indent=2))

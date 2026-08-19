@@ -145,7 +145,6 @@ def main():
   print("\n=== (3) aperture at base-swing limits (calibration anchors) ===", flush=True)
   _reset_assembly(mjm, mjd)
   _settle(mjm, mjd, 200)
-  base0 = {f["name"]: mjd.qpos[_jadr(mjm, f["base"])] for f in V.WELD_FINGERS}
   aps = {}
   for which, target in (("OPEN(min,-0.70)", "lo"), ("CLOSED(max,+0.90)", "hi")):
     _reset_assembly(mjm, mjd)
