@@ -8,6 +8,20 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- ``mjlab.tasks.compliance.deploy``: per-joint system identification on the real
+  Rizon 4S, and the real-time torque bridge it runs over. The arm XML declares
+  3.17/1.38/0.13 armature in its tier default classes but applies none of it to
+  the ``<joint>`` elements, so the compiled model has ``dof_armature`` all zero
+  and the shoulder came out 6x too light; ``frictionloss`` and ``damping`` are
+  zero too. ``identify_rizon.py`` measures all three plus the gravity-comp bias,
+  one joint at a time, from breakaway ramps (Coulomb friction, and the one
+  measurement that does not depend on the regression converging), sines (inertia,
+  because a sinusoid bounds the position excursion where a torque staircase does
+  not) and velocity sweeps (damping, which sines alone cannot separate from
+  Coulomb friction). The RDK's Python bindings exclude every real-time mode and
+  the Scheduler, so ``rt_bridge/`` is a C++ process holding the 1 kHz loop with
+  shared memory to the Python side -- ten ticks per policy step, which is the
+  sim's ``decimation=10`` rather than an approximation of it.
 - ``scripts/export_student_onnx.py``: turns a bare distillation ``model_N.pt``
   into a deployable ONNX. The training-time exporter needs the run's
   ``params/agent.yaml``; this one is for the checkpoints that arrive without a
