@@ -134,8 +134,8 @@ class StudentPolicy:
     self.dt = 1.0 / calib.CONTROL_HZ
     rate = self.profile.rate_limit
     self.rate_limit = None if rate is None else np.asarray(rate, np.float32)
-    tau = self.profile.ema_tau
-    self.ema_alpha = 0.0 if not tau else float(np.exp(-self.dt / tau))
+    self.ema_alpha = 0.0
+    self.set_ema_tau(self.profile.ema_tau)
     self._cmd = self.default.copy()
     self.last_request = self.default.copy()
     # Per joint, how far the last request exceeded one limiter allowance: 0
@@ -145,6 +145,20 @@ class StudentPolicy:
     # and a deployment far from what training logged is the symptom of a
     # RATE_LIMIT that does not match the checkpoint.
     self.last_overdrive = np.zeros(11, dtype=np.float32)
+
+  def set_ema_tau(self, tau: float | None) -> None:
+    """Set the command low-pass constant in seconds; 0 or None turns it off.
+
+    Overriding this at the bench is legitimate in a way overriding
+    `rate_limit` is not -- see `profiles.Profile.ema_tau`. The lag is not
+    something the weights trained against, so the only cost of changing it is
+    the one the `-SlowEma` sweep measured. Call it BEFORE `reset()`; changing
+    it mid-trial leaves `_cmd` carrying the old filter's state.
+    """
+    if tau is not None and tau < 0.0:
+      raise ValueError(f"ema_tau must be non-negative, got {tau}")
+    self.ema_tau = tau
+    self.ema_alpha = 0.0 if not tau else float(np.exp(-self.dt / tau))
 
   def _check_cube(self, half_extent: float | None) -> float:
     """The object's half-edge in metres, checked against the trained range.
@@ -420,6 +434,12 @@ class StudentPolicy:
         f"({self.cube_half_extent:.4f} m half-extent), fed to the policy every "
         "step."
       )
+    if self.ema_tau != self.profile.ema_tau:
+      # The line above came from the profile and is now stale, so say so rather
+      # than leaving two contradictory numbers on one screen.
+      was = "off" if not self.profile.ema_tau else f"{self.profile.ema_tau:.3f} s"
+      now = "OFF" if not self.ema_tau else f"{self.ema_tau:.3f} s"
+      lines.append(f"          command EMA OVERRIDDEN: {was} -> {now}")
     if self.profile.note:
       lines.append(f"          note: {self.profile.note}")
     return "\n".join(lines)

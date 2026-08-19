@@ -34,6 +34,7 @@ evidence is short -- `deploy.run --profile` is the override.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,6 +56,11 @@ _ARM_SCALE = (0.40, 0.40, 0.40, 0.40, 0.40, 0.40, 1.10)
 # travel before contact; the fingers get 3.0 because a grasp is a fast motion
 # over a short distance.
 _LIMITED = (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5, 3.0, 3.0, 3.0, 3.0)
+
+# The low-pass constant the `-SlowEma` evaluation priced, seconds. One value for
+# every profile that carries it, because it is what was measured -- 0.09 s is
+# the `ema_tau` of the `Ema` / `SlowEma` task ids and nothing else has been run.
+_EMA = 0.09
 
 # Finger travel as the training env set it (`_WIDE_DIRECTIONAL` and round 2's
 # replacement). The proximal lower bound is the drive-through limit: q = -0.0754
@@ -93,6 +99,35 @@ class Profile:
   # check: a policy trained against this cap asks for a little more than it, one
   # trained against a looser cap asks for many times it on nearly every step.
   rate_limit: tuple[float, ...] | None
+  # First-order low-pass time constant on the published command, seconds, or
+  # None for no filtering.
+  #
+  # THE OPPOSITE OF `rate_limit` IN THE ONE WAY THAT MATTERS: it does not have
+  # to match what the checkpoint trained under, and every value below was set
+  # on a checkpoint that trained with no EMA at all. The action term lives
+  # OUTSIDE the network -- the ONNX graph is obs+camera -> action and knows
+  # nothing about either smoother -- so adding a lag to a finished policy is a
+  # deployment setting, and the `-SlowEma` task ids exist to price exactly that
+  # in sim: same weights, slower action term, 2048 episodes.
+  #
+  # It is here rather than in `calib.py` because the PRICE is per-checkpoint,
+  # measured against each arm's own unsmoothed baseline (`r4/sweeps/sl2_*`):
+  #
+  #   square-varh (R3-High)   95.65% -> 96.78%   +1.13
+  #   cube        (R3-Cube)   91.26% -> 90.58%   -0.68
+  #   everyshape  (R4-Gen)    78.91% -> 78.27%   -0.64
+  #   (R4-Box, no profile)    77.83% -> 83.84%   +6.01
+  #
+  # i.e. free, within the +-0.9 pt standard error of a 2048-episode eval on
+  # three of the four and a clear gain on the fourth. That is the whole reason
+  # to prefer it: the other way to slow the arm down, tightening the slew cap
+  # to `_SLEW_TIGHT`, costs 2.2 to 10.4 points on the same four checkpoints.
+  #
+  # What it buys is the PEAK, not the steady state: at tau = 0.09 s and 50 Hz a
+  # step of the command moves 20% of the way on the first control step, so a
+  # 0.8 rad jump becomes 0.16 rad. It bounds nothing -- a policy that holds a
+  # far target still gets there at full speed -- which is why it is not a
+  # substitute for the slew limit, and why `SlowBoth` exists.
   ema_tau: float | None
   # The cube EDGE range the run trained over, mm. Always known; whether the
   # policy can SEE it is `observes_cube_size`. For a size-blind checkpoint this
@@ -207,7 +242,14 @@ class Profile:
       f"          action scale fingers {self.action_scale[calib.HAND_SLICE][0]:.2f}"
       f", finger travel prox {prox[0]:+.4f}..{prox[1]:+.2f} "
       f"dist {dist[0]:+.2f}..{dist[1]:+.2f} rad",
-      f"          slew limit {rate}",
+      f"          slew limit {rate}, command EMA "
+      + (
+        "OFF"
+        if not self.ema_tau
+        else f"{self.ema_tau:.3f} s "
+        f"({100 * (1 - math.exp(-1 / (calib.CONTROL_HZ * self.ema_tau))):.0f}% "
+        f"of a step on the first control step)"
+      ),
       f"          cube {lo:.1f}-{hi:.1f} mm ({size}), spawn x {x0:.2f}..{x1:.2f} "
       f"y {y0:+.2f}..{y1:+.2f} m",
       f"          depth frame {self.depth_hw[0]}x{self.depth_hw[1]}, cnn stride "
@@ -386,6 +428,9 @@ PROFILES: dict[str, Profile] = {
     cube_edge_mm=(15.0, 57.5),
     spawn_xy=_WIDE_SPAWN,
     runs=("square_fixH",),
+    # No `ema_tau`: the `-SlowEma` sweep was run on the other three arms and on
+    # R4-Box, not on this one, and the price is per-checkpoint. Add `_EMA` here
+    # once it has a number of its own.
     note=(
       "round 3's control arm: upright cubes, no stretch, from a reset pose a "
       "fixed 68 mm above the object. The fixH/variableH in the two filenames is "
@@ -400,7 +445,7 @@ PROFILES: dict[str, Profile] = {
     action_scale=(*_ARM_SCALE, 0.45, 0.45, 0.45, 0.45),
     finger_range=_R2_FINGERS,
     rate_limit=_LIMITED,
-    ema_tau=None,
+    ema_tau=_EMA,  # priced on R3-High; see the field comment
     cube_edge_mm=(15.0, 57.5),
     spawn_xy=_WIDE_SPAWN,
     runs=("square_variableH",),
@@ -421,7 +466,7 @@ PROFILES: dict[str, Profile] = {
     action_scale=(*_ARM_SCALE, 0.45, 0.45, 0.45, 0.45),
     finger_range=_R2_FINGERS,
     rate_limit=_LIMITED,
-    ema_tau=None,
+    ema_tau=_EMA,  # priced on R3-Cube; see the field comment
     cube_edge_mm=(15.0, 57.5),
     spawn_xy=_WIDE_SPAWN,
     cnn_stride=_FINE_STRIDE,
@@ -441,7 +486,7 @@ PROFILES: dict[str, Profile] = {
     action_scale=(*_ARM_SCALE, 0.45, 0.45, 0.45, 0.45),
     finger_range=_R2_FINGERS,
     rate_limit=_LIMITED,
-    ema_tau=None,
+    ema_tau=_EMA,  # priced on R4-Gen; see the field comment
     cube_edge_mm=(15.0, 57.5),
     spawn_xy=_WIDE_SPAWN,
     cnn_stride=_FINE_STRIDE,

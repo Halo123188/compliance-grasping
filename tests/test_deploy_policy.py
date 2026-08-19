@@ -21,6 +21,7 @@ is the real `act()` down to the joint-limit clamp it ends with.
 
 from __future__ import annotations
 
+import math
 from typing import cast
 
 import numpy as np
@@ -35,6 +36,10 @@ HOME = np.asarray(calib.DEFAULT_JOINT_POS, dtype=np.float32)
 # what changed between them is exactly what these tests are about.
 V11 = profiles.PROFILES["v11"]
 R2 = profiles.PROFILES["r2-small"]
+# The one arm trained without a slew cap, so the EMA can be watched on its own,
+# and one that carries an EMA out of profiles.py.
+UNLIMITED = profiles.PROFILES["v11-unlimited"]
+EMA = profiles.PROFILES["square-varh"]
 SCALE = np.asarray(V11.action_scale, dtype=np.float32)
 FRAME = V11.frame_dim
 
@@ -200,10 +205,59 @@ def test_the_joint_limit_clamp_is_the_last_thing_applied(make_policy):
   assert (cmd >= limits[:, 0] - 1e-6).all()
 
 
-def test_ema_is_off_unless_calib_says_otherwise(make_policy):
-  """The paired checkpoints train with ema_tau null; a stray value is a bug."""
+def test_ema_is_off_unless_the_profile_says_otherwise(make_policy):
+  """v11 carries no EMA, so a stray alpha here is a bug in profiles.py."""
   policy = make_policy(np.zeros(11))
   assert (V11.ema_tau is None) == (policy.ema_alpha == 0.0)
+
+
+def test_the_ema_shaves_the_first_step_of_a_command_jump(make_policy):
+  """0.09 s at 50 Hz is 20% of the way on the first control step.
+
+  This is the whole claim the -SlowEma evaluation rests on -- the lag cuts the
+  PEAK of a step, which is what makes the fingers snap, while bounding nothing
+  in steady state. The slew limit is turned off so the EMA is the only thing
+  acting; with the cap on, a full-scale request is limited long before it is
+  filtered.
+  """
+  policy = make_policy(np.ones(11), profile=UNLIMITED)
+  policy.set_ema_tau(0.09)
+  policy.reset()
+
+  obs = np.zeros(policy.profile.frame_dim, np.float32)
+  depth = np.zeros((1, *policy.depth_hw), np.float32)
+  start = policy._cmd.copy()
+  first = policy.act(obs, depth)
+
+  jump = policy.last_request - start
+  moved = (first - start) / jump
+  assert np.allclose(moved, 1.0 - math.exp(-1.0 / (calib.CONTROL_HZ * 0.09)), atol=1e-6)
+  assert 0.19 < float(moved[0]) < 0.21
+
+  # And it converges on the request rather than capping it: nothing is bounded.
+  # Against the CLAMPED request, since the joint-limit clip is downstream of
+  # both smoothers and is the one bound the EMA does not remove.
+  settled = np.clip(policy.last_request, policy.lo, policy.hi)
+  assert np.allclose(_drive(policy, 200), settled, atol=1e-4)
+
+
+def test_the_ema_can_be_overridden_at_the_bench(make_policy):
+  """`--ema-tau` is legitimate in a way a slew-limit override is not.
+
+  The lag is not something the weights trained against -- the action term is
+  outside the ONNX graph -- so the operator may dial it. 0 turns it off, and a
+  negative value is a typo rather than a setting.
+  """
+  policy = make_policy(np.zeros(11), profile=EMA)
+  assert policy.ema_alpha == pytest.approx(math.exp(-1.0 / (calib.CONTROL_HZ * 0.09)))
+  assert "command EMA" in policy.describe()
+
+  policy.set_ema_tau(0.0)
+  assert policy.ema_alpha == 0.0
+  assert "OVERRIDDEN" in policy.describe()
+
+  with pytest.raises(ValueError, match="non-negative"):
+    policy.set_ema_tau(-0.01)
 
 
 # --- the history-stacked student ---------------------------------------------

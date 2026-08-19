@@ -482,6 +482,18 @@ Changed
   retired old-claw config, the citation is marked ``retired`` rather than left
   pointing at a file that is gone. The measurements themselves are in the
   comments and are untouched.
+- ``deploy/`` now flies the round-3/4 checkpoints behind a 0.09 s command EMA
+  (``square-varh``, ``cube`` and ``everyshape``), and ``deploy.run --ema-tau``
+  overrides it at the bench. Unlike the slew limit this does not have to match
+  training: the action term is outside the ONNX graph, so the lag can be added
+  to a finished policy, and the ``-SlowEma`` task ids priced exactly that in sim
+  over 2048 episodes -- +1.13, -0.68, -0.64 and +6.01 points against each arm's
+  own unsmoothed baseline, i.e. free within the eval's own noise on three of
+  four. Tightening the slew cap instead costs 2.2 to 10.4 points on the same
+  checkpoints. What the lag buys is the PEAK: at 50 Hz a step of the command
+  moves 20% of the way on the first control step, which is the half of "the
+  fingers snap shut" that a rate cap does not fix. ``square-fixh`` is left
+  unsmoothed because it was not in the sweep.
 - ``deploy/`` now applies the same command smoothing the policy trained under,
   read off the selected ``profiles.Profile``. It must match the checkpoint: a
   policy trained behind a slew cap learns to lean on it, asking for a target rate

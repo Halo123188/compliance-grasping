@@ -268,6 +268,18 @@ def main() -> int:
       "warn, since a cube they never saw is still a cube they cannot grasp."
     ),
   )
+  ap.add_argument(
+    "--ema-tau",
+    type=float,
+    default=None,
+    help=(
+      "override the profile's command low-pass constant, seconds; 0 turns it "
+      "off. Unlike the slew limit this is a DEPLOYMENT choice -- the action "
+      "term is outside the network, so the lag can be changed on a finished "
+      "checkpoint and the -SlowEma sweep priced doing so at roughly nothing "
+      "(see profiles.Profile.ema_tau). Raise it if the arm still snaps."
+    ),
+  )
   ap.add_argument("--steps", type=int, default=1000, help="50 Hz steps to run")
   ap.add_argument(
     "--dry-run", action="store_true", help="no camera, no gripper, no arm"
@@ -457,6 +469,13 @@ def main() -> int:
   except ValueError as e:
     print(f"!! {e}")
     return 1
+  # Before reset(), so the smoother is built with the constant it will run with.
+  if args.ema_tau is not None:
+    try:
+      policy.set_ema_tau(args.ema_tau)
+    except ValueError as e:
+      print(f"!! {e}")
+      return 1
   policy.reset()
   print(f"loaded {args.onnx}")
   print(policy.describe())
