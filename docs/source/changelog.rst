@@ -8,6 +8,18 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- ``scripts/export_student_onnx.py``: turns a bare distillation ``model_N.pt``
+  into a deployable ONNX. The training-time exporter needs the run's
+  ``params/agent.yaml``; this one is for the checkpoints that arrive without a
+  ``params/`` directory at all, and rebuilds the student from its own weights --
+  layer widths, conv channels and kernels, observation width, and the CNN's
+  feature grid, which is a buffer inside the checkpoint. What the weights do not
+  settle is the CNN's STRIDE: same padding makes each layer ``ceil(dim/stride)``,
+  so a 30x40 grid is a 120x160 frame at stride 1/2/2 or a 240x320 one at 2/2/2,
+  and both load with ``strict=True``. So ``profiles.Profile`` declares both
+  ``depth_hw`` and ``cnn_stride``, and the exporter checks the pair against the
+  grid -- a check rather than a restatement, because neither half is derived
+  from the other. ``--check`` runs the export against the torch model.
 - ``deploy/`` runs the four round-3 students (``square_fixH``,
   ``square_variableH``, ``cube``, ``everyShape``). They pair round 2's action
   term -- fingers at 0.45, travel to -0.32 -- with a v11 34-d observation and no
