@@ -7,8 +7,9 @@ every checkpoint save, so the deployed weights are the evaluated weights.
 
 ```
 deploy/
-  calib.py            every constant, grouped by PROVENANCE
-  policy.py           ONNX session + the 34-d observation + action -> targets
+  calib.py            every BENCH constant, grouped by PROVENANCE
+  profiles.py         what changes with the checkpoint, keyed by run name
+  policy.py           ONNX session + the observation + action -> targets
   perception.py       D435 depth -> the exact (1,120,160) tensor trained on
   hand.py             sim radians <-> encoder counts, over the binary protocol
   arm.py              the Flexiv contract, FlexivArm (RDK) and ReplayArm
@@ -30,6 +31,10 @@ uv pip install --python .venv-deploy/bin/python \
   "flexivrdk==1.9.0" numpy onnxruntime pyserial pyrealsense2
 ```
 
+One exporter lives outside this tree, because it needs torch and mjlab and the
+robot host has neither: `scripts/export_student_onnx.py` turns a bare
+`model_N.pt` into a deployable ONNX. See "The August 18 arms".
+
 `hand.py` looks for the gripper checkout at `/home/yiboc/gripper/firmware/host`;
 set `GRIPPER_HOST_DIR` if yours is elsewhere.
 
@@ -45,8 +50,8 @@ q_target[j] = default_joint_pos[j] + action_scale[j] * a[j]
 |---|---|---|---|
 | 0–5 | joint1–6 (arm) | 0.40 | 0, −0.368, 0.217, 2.338, −0.180, 1.122 |
 | 6 | joint7 (wrist roll) | 1.10 | 1.153 |
-| 7, 9 | left_1, right_1 (proximal) | 0.35 | +0.2746, −0.2746 |
-| 8, 10 | left_2, right_2 (distal) | 0.35 | 0.0, 0.0 |
+| 7, 9 | left_1, right_1 (proximal) | 0.35 (**0.45** on `R2-*`) | +0.2746, −0.2746 |
+| 8, 10 | left_2, right_2 (distal) | 0.35 (**0.45** on `R2-*`) | 0.0, 0.0 |
 
 There is no action clipping anywhere in the trained pipeline. Control rate is
 50 Hz (sim timestep 5 ms × decimation 4).
@@ -61,32 +66,139 @@ obs[33]      goal_height                       m above the FLOOR, 0.50–0.60
 camera       (1,120,160) depth, clamp(m, 0.01, 3.0) / 3.0
 ```
 
+The `R2-*` checkpoints read one more term — the object's half-edge — before
+`goal_height`, which makes their frame 35 wide; see "Round 2" below. Which terms
+this checkpoint reads is `profiles.Profile.obs_terms`, and `policy.py` assembles
+the vector from that list rather than from a fixed four.
+
 `obs[22:33]` is the raw network output, not the joint target it became. Feeding
 the target back is dimensionally plausible and completely wrong.
 
 ## Which checkpoint, and what changes with it
 
-Three are deployable and `run.py` takes any of them. Two things differ between
-them, and only one of the two is checked for you.
+Thirteen are deployable and `run.py` takes any of them. Five things differ
+between checkpoints, all five fail silently when wrong, and none of them is an
+operator setting any more: they live in `deploy/profiles.py` keyed by the run
+that produced the weights, and the profile is **selected from the ONNX filename
+and the graph** at load.
 
-| checkpoint | obs | `calib.RATE_LIMIT` |
-|---|---|---|
-| `2026-08-06_20-53-44_s3_dr_fine` | 34 | **`None`** — no limiter in its action term |
-| `2026-08-11_06-12-17_s_facelevel` | 34 | `(1.0 ×6, 1.5, 3.0 ×4)` |
-| `2026-08-10_20-21-25_s_g1_relabel` | 34 | `(1.0 ×6, 1.5, 3.0 ×4)` |
-| `2026-08-11_00-52-56_s_g1_hist` | **136** | `(1.0 ×6, 1.5, 3.0 ×4)` |
+| checkpoint | profile | obs | fingers | travel | slew | cnn |
+|---|---|---|---|---|---|---|
+| `2026-08-06_17-29-41_s1_dr` | `v11-unlimited` | 34 | 0.35 | −0.0754 | **off** | 2/2/2 |
+| `2026-08-06_20-53-44_s3_dr_fine` | `v11-unlimited` | 34 | 0.35 | −0.0754 | **off** | 2/2/2 |
+| `2026-08-11_06-12-17_s_facelevel` | `v11` | 34 | 0.35 | −0.0754 | on | 2/2/2 |
+| `2026-08-10_20-21-25_s_g1_relabel` | `v11` | 34 | 0.35 | −0.0754 | on | 2/2/2 |
+| `2026-08-11_00-52-56_s_g1_hist` | `v11` | **136** | 0.35 | −0.0754 | on | 2/2/2 |
+| `2026-08-12_18-20-34_d-R1-SatPen-All` | `r1` | 34 | 0.35 | −0.0754 | on | 2/2/2 |
+| `2026-08-12_18-20-31_d-R1-FaceLevel-All` | `r1` | 34 | 0.35 | −0.0754 | on | 2/2/2 |
+| `2026-08-12_18-20-48_d-R2-Reach` | `r2-reach` | **35** | **0.45** | **−0.32** | on | 2/2/2 |
+| `2026-08-12_18-20-19_d-R2-Small` | `r2-small` | **35** | **0.45** | **−0.32** | on | 2/2/2 |
+| `square_fixH_model_2999` | `square-fixh` | 34 | **0.45** | **−0.32** | on | 2/2/2 |
+| `square_variableH_model_2999` | `square-varh` | 34 | **0.45** | **−0.32** | on | 2/2/2 |
+| `cube_model_2999` | `cube` | 34 | **0.45** | **−0.32** | on | **1/2/2** |
+| `everyShape_model_2800` | `everyshape` | **136** | **0.45** | **−0.32** | on | **1/2/2** |
 
-**The observation width is read off the ONNX**, so nothing has to be set for
-`-hist` and feeding a 34-d vector to it raises at load rather than deploying.
-**The rate limit is not**, and it is the one number an operator still has to
-match by hand — see the block comment on `calib.RATE_LIMIT`. Only `s3_dr_fine`
-needs it set back to `None`; the other three trained under identical limits and
-logged `rate_scale` 1.0 for their whole run.
+Every one of them reads a **120×160** depth frame.
+
+The five are the observation layout, the depth frame size, the finger action
+scale, the finger travel limits and the command slew limit. Three of them are
+corroborated against the file — the observation width and the camera shape come
+off the graph, the action scale off the metadata, and any disagreement raises at
+load — and the other two rest on the profile having named the right run, which
+is why the run name is what selects it. `run.py` prints the
+whole profile before anything moves; read that line rather than trusting the
+filename.
+
+**Round 3 broke the pattern the first two rounds set.** Through round 2, the
+finger settings could be read off the observation width: 34-d meant 0.35 and
+−0.0754, 35-d meant 0.45 and −0.32. The four round-3 arms are 34-d with 0.45 and
+−0.32 — round 2's action term on a v11 frame, size-blind. So the layout does not
+date a checkpoint, and a profile inferred from it would clamp these at −0.0754,
+where the closure a 15 mm object needs cannot be commanded and nothing anywhere
+reports a fault.
+
+**Keep the exported name.** `<run>.onnx` inside `<run>/` is what identifies the
+arm. A file renamed to `policy.onnx` falls back to shape alone, which cannot
+tell `v11` from `v11-unlimited` (both 34-d at 0.35), so it silently gets the
+*limited* profile — the safe direction, since limiting an unlimited policy makes
+it lag while publishing a limited policy's raw request is a full-speed move into
+the bench. Pass `--profile` to say which it really is.
 
 `relabel` and `hist` are otherwise the same deployment as `facelevel`.
 `relabel_achievable` changes the distillation loss (the student regresses onto
 the teacher's request *after* its rate limiter clipped it) and is invisible from
 here.
+
+### Round 1 (`-All`): no code difference, a different bench
+
+`R1-SatPen-All` and `R1-FaceLevel-All` are byte-for-byte the same deployment as
+`s_g1_relabel` — same 34-d student, same scales, same limiter, same gains. What
+changed is what they trained *against*, and those are claims about your bench:
+
+- **cube 42.5–57.5 mm** (was 45–55), **mass 30–300 g** (was the nominal cube),
+- **spawn box x 0.36–0.56, y ±0.12 m** in the base frame (was ±0.08/±0.10 about
+  the manipulation centre, i.e. x 0.38–0.54, y ±0.10).
+
+They are also, as far as the run metadata can say, the first checkpoints trained
+**with the corrected camera extrinsic** — everything through `2026-08-11` was
+trained against the old, 19.9 mm-off `CAM_POS_BASE`, so that fix applied to the
+bench but not to the policy. The evidence is indirect and worth restating: the
+runs record base commit `634f8db` with the training clone three commits *ahead*
+of `origin/antipodal-gripper`, whose tip already carries
+`arm_cfg.CALIB_CAM_OFFSET`, and their diff does not touch it. That is an
+inference from a commit this checkout does not have, so confirm it against the
+run tree before leaning on it.
+
+### Round 2 (`R2-*`): the policy is told how big the object is
+
+`R2-Reach` and `R2-Small` are a different deployment, in three coupled ways.
+
+**The observation is 35 wide**, and the extra number sits *between* the actions
+and `goal_height`:
+
+```
+obs[0:11]    joint_pos − default_joint_pos     rad
+obs[11:22]   joint_vel                         rad/s
+obs[22:33]   the PREVIOUS step's raw action    network units
+obs[33]      cube_size — the object's HALF EDGE, metres     <- new
+obs[34]      goal_height                       m above the FLOOR
+```
+
+Both of the last two terms are one number wide, so swapping them produces a
+perfectly valid 35-vector and nothing downstream can tell. Two independent
+confirmations that the order above is the real one. The baked normalizer's dim
+33 has mean **0.0250** on `R2-Reach` and **0.0175** on `R2-Small` — the
+midpoints of those two arms' half-extent ranges, in metres — while dim 34
+carries the 0.549 / 0.039 that has been `goal_height` on every export. And
+feeding the swapped vector on the bench frame takes `max|a|` from **0.39 to
+356** on `R2-Reach` and from **0.21 to 42.5** on `R2-Small`, so `--max-action`
+does catch it, but only after it has been flown.
+
+**You supply the size.** `--cube-mm` is the cube's EDGE in mm, measured with a
+caliper, and it defaults to `calib.CUBE_EDGE_MM` (50.0). It is an observation
+through the same baked normalizer that turned an out-of-range `goal_height` into
+a `|3641|` action, so it is range-checked hard: `R2-Reach` refuses anything
+outside 45–55 mm and `R2-Small` outside 15–57.5 mm. The two mistakes to expect
+are mm-for-metres and edge-for-half-edge; `run.py` takes the edge in mm and does
+the halving, so the units live in one place.
+
+**The fingers reach further and are commanded harder.** The proximal lower bound
+opens from −0.0754 rad (40 mm of pad separation, a 10 mm squeeze on the 50 mm
+cube) to **−0.32** (7.2 mm nominal — the fingers *cross* at −0.38), and the
+finger action scale rises 0.35 → 0.45 so that closure stays about −1.3σ of the
+policy's own exploration noise. That is why the size observation is required
+rather than nice to have: the same full-close command that used to bottom out on
+the cube becomes ~0.24 rad of over-travel on a 50 mm one, order 350 N.
+
+On hardware there is no joint range to stop it — the sim's limit is a physical
+stop, the robot just gets the command — so `policy.act()` clamps to the
+checkpoint's own travel, `profiles.Profile.joint_limits`. **This also fixes the
+older checkpoints**, which were being clamped at the URDF's ±1.6 rad on all four
+finger joints rather than at the travel the training env set: proximal
+−0.0754…+1.60 and distal −1.60…+0.10 for the left finger, mirrored as
+[−hi, −lo] on the right because closing is left-negative and right-positive.
+Expect the first R2 grasp to squeeze harder than the round-1 ones; the current
+cap (`--grip-cap`) is still what bounds the force.
 
 ### The 136-d observation is not four stacked observations
 
@@ -120,15 +232,117 @@ sbatch sbatch/wide_parity.sbatch \
   model_2999.pt 2026-08-11_00-52-56_s_g1_hist.onnx
 ```
 
-`relabel`'s task is the same id without the `-Hist`. **Both live in the run's
-own `git/compliance-grasping.diff`, not on this branch** — the parity check
-needs that tree checked out, since it builds the env the checkpoint trained in.
+`relabel`'s task is the same id without the `-Hist`. The round-1 and round-2
+arms are `Mjlab-Grasp-TwoFingerWide-Flexiv-Distill-Depth-<arm>` for `<arm>` in
+`R1-SatPen-All`, `R1-FaceLevel-All`, `R2-Reach`, `R2-Small`, each against its
+own `model_2999.pt`. **All of them live in the run's own
+`git/compliance-grasping.diff`, not on this branch** — the parity check needs
+that tree checked out, since it builds the env the checkpoint trained in.
+
+For the `R2-*` pair the parity check is the only thing that verifies the new
+term end to end: it reads each env's cube half-extent the way `object_half_extent`
+does and hands it to `deploy/policy.py`'s own `frame()`, so a wrong slot or a
+wrong unit shows up as a large obs difference rather than as a policy that
+merely grips badly.
 
 The history is **backfilled** at reset — the first observation of a trial is one
 pose repeated four times, not one pose behind three zero frames — because that
 is what `CircularBuffer` does on its first push after a reset. So `policy.reset()`
 between trials matters more for this checkpoint than for the others, and
 `observe()` is stateful: one call advances the history by one step.
+
+### Round 3 (August 18): four bare checkpoints
+
+`square_fixH`, `square_variableH`, `cube` and `everyShape` arrived as bare
+`model_N.pt` files — `student_state_dict`, an optimizer state and an iteration
+count, with **no `params/` directory beside them**. Everything before them was
+deployed from an ONNX that training itself exported out of the live env, so the
+scene constants in the file were measured rather than asserted. These were not.
+
+Export them with the offline exporter, which rebuilds the student from the
+weights and takes the rest from the profile:
+
+```sh
+uv run python scripts/export_student_onnx.py \
+  --checkpoint ~/yiboc/cube_model_2999.pt --profile cube --check
+```
+
+`--check` re-runs the export against the torch model on random inputs; it should
+print a worst difference around 1e-6. **Keep the output name** — `profiles.select`
+matches `square_fixH`, `square_variableH`, `cube_model` and `everyShape` in the
+filename, and a renamed export of one of these is *refused* rather than guessed
+at, because (34-d, 0.45) is four profiles and no fallback.
+
+What the weights settle by themselves: the observation layout (34-d, no
+`cube_size`), the history depth (`everyShape` alone stacks four control steps,
+136-d), and the CNN's **feature grid** — 15×20 on the two `square` arms, 30×40
+on `cube` and `everyShape`, read off the spatial-softmax coordinate buffers.
+
+**What the grid does not settle is the stride, and that is the trap.** Same
+padding makes each layer `ceil(dim / stride)`, so a 30×40 grid is a 120×160
+frame at stride 1/2/2 *or* a 240×320 frame at 2/2/2 — and both rebuild, both
+load with `strict=True`, both export cleanly. The first guess here was the
+second reading, which would have shipped a network reading the world at half
+the scale it was trained on, with nothing raising anywhere. The truth is stride
+**1/2/2** on a 120×160 frame: round 3 stopped halving in the *first*
+convolution, which doubles the resolution carried into the softmax off an
+unchanged camera for about 4× that layer's arithmetic. So `Profile` now declares
+`depth_hw` *and* `cnn_stride`, and the exporter checks the pair against the grid
+— a real check only because neither half is derived from the other.
+
+Confirm an export against the ONNX itself:
+
+```sh
+uv run python -c "
+import onnx,sys
+m=onnx.load(sys.argv[1])
+print({i.name:[d.dim_value for d in i.type.tensor_type.shape.dim] for i in m.graph.input})
+print([list(a.ints) for n in m.graph.node if n.op_type=='Conv' for a in n.attribute if a.name=='strides'])
+" ~/yiboc/cube_model_2999.onnx
+```
+
+should print `{'obs': [1, 34], 'camera': [1, 1, 120, 160]}` and
+`[[1, 1], [2, 2], [2, 2]]`.
+
+The camera work does not change at all: 848×480 stream, 640×480 centre crop —
+that crop is where the trained field of view comes from — box-averaged by 4 to
+120×160, exactly as before.
+
+The action term came out of the runs' `env.yaml`, and it is **round 2's on a v11
+observation**: fingers at **0.45**, travel out to **−0.32**, `use_default_offset`
+with a zero offset, `ema_tau` null, and the slew limit at 1.0 / 1.5 / 3.0 rad/s
+that `_LIMITED` already carried. Training scaled that limit down a curriculum
+(3.0 → 2.0 → 1.5 → 1.0×) and all four reached the end of it, so the final values
+are the ones to deploy.
+
+| profile | objects | reset pose |
+|---|---|---|
+| `square-fixh` | upright cubes, 15–57.5 mm | fixed, +68 mm above the object |
+| `square-varh` | upright cubes, 15–57.5 mm | +68 / +110 / +150 / +200 mm |
+| `cube` | boxes, stretched in plan | fixed, +68 mm |
+| `everyShape` | box / cylinder / sphere at 50/25/25 | fixed, +68 mm |
+
+All four spawn over the same box (x 0.36–0.56, y ±0.12) at any yaw, and all four
+draw size as a 25 mm nominal half-extent times U(0.30, 1.15), clamped to
+7.5–32.5 mm — so the **height** is 15–57.5 mm everywhere. `cube` and
+`everyShape` then stretch the horizontal plane: x and y each draw U(0.7, 1.6),
+normalised so their geometric mean is 1, which leaves the footprint edges at
+about 0.66–1.51× the height (plan aspect ratio p95 ≈ 1.76). A cylinder or a
+sphere takes that on its radius and stays circular in plan, so what separates
+`everyShape` from `cube` is the shape mix rather than the aspect.
+
+`fixH` / `variableH` is the **reset pose**, not the goal-height observation — the
+two runs' normalizers agree on `goal_height` to four decimals, so the same
+`--goal-height` applies to both. `square-varh` draws its start from a solved
+hover family at +68/+110/+150/+200 mm; the claw leaves the depth frame above
++143 mm, so roughly 46% of its training episodes begin with the claw not visible
+to itself. **That is the one thing it buys, and the only reason to prefer it:**
+it tolerates any start height in that band, where the other three expect +68 mm.
+Only the reset pose moves — the action term's default offset stays put, because
+lifting that too puts the descent at 1.51σ.
+
+`--cube-mm` is advisory for all four: none of them observes the object's size,
+and on `everyShape` the object need not be a box at all.
 
 ## What the two controllers are
 
@@ -162,12 +376,17 @@ between trials matters more for this checkpoint than for the others, and
 ## Order of operations
 
 1. **`--dry-run` first, on a desk.** Catches a metadata mismatch, a wrong
-   observation width and a missing calibration in a second.
+   observation width, a cube outside the trained size range and a missing
+   calibration in a second. Read the `[profile]` block it prints: that is the
+   checkpoint's own observation layout, action scale, finger travel and slew
+   limit, and it is what the rest of the run depends on being right.
    ```sh
    uv run python -m deploy.run --dry-run --onnx <policy>.onnx
+   # round 2, with the cube you will actually put on the bench:
+   uv run python -m deploy.run --dry-run --onnx <policy>.onnx --cube-mm 50
    ```
 2. **Parity check** (cluster, needs mjlab). Confirms the ONNX is numerically the
-   checkpoint that was evaluated, and that `policy.py` assembles the same 34-d
+   checkpoint that was evaluated, and that `policy.py` assembles the same
    observation the env does.
    ```sh
    sbatch sbatch/wide_parity.sbatch <TASK> <model.pt> <policy.onnx>
@@ -462,15 +681,23 @@ along with speed — which is exactly the thing to be careful about above.
 
 ### Watching the real frame next to the sim's
 
-The policy sees one 120×160 depth frame and nothing else, so whether the real
-bench looks like the trained bench is a question about that image.
+The policy sees one depth frame and nothing else, so whether the real bench
+looks like the trained bench is a question about that image.
 
 ```sh
 # on the workstation (needs mjlab + a GPU)
 uv run python scripts/render_sim_depth.py sim_ref.npz --cube-xy 0.5207 0.1016
+# ... or, for the `cube` / `everyShape` checkpoints:
+uv run python scripts/render_sim_depth.py sim_ref.npz --depth-hw 240,320 \
+  --cube-xy 0.5207 0.1016
 # on the robot host
 .venv-deploy/bin/python -m deploy.live_view --sim sim_ref.npz   # localhost:8000
 ```
+
+The **reference decides the resolution** — `live_view` reads it off the npz and
+opens the camera to match, so the two panels are always the same picture.
+`check_camera.py` stays at 120×160 whatever is being flown: it measures the
+extrinsic and the field of view, neither of which depends on the sampling.
 
 Four panels: real (live), sim (still — the scene does not move), a signed
 difference, and an overlay. The difference is two colours, blue for real nearer

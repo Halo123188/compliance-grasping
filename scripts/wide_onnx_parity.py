@@ -42,7 +42,7 @@ from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from deploy import calib  # noqa: E402
-from deploy.policy import StudentPolicy, stack_history  # noqa: E402
+from deploy.policy import StudentPolicy  # noqa: E402
 
 N, STEPS, DEV = 32, 60, "cuda:0"
 
@@ -55,16 +55,15 @@ torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
 
 
-def _name_dim(w: int, history: int) -> str:
+def _name_dim(w: int, history: int, profile) -> str:
   """Which term, which joint and how many steps back observation dim `w` is.
 
   Worth the arithmetic: under history the dimension numbers stop being
-  readable by eye, and "dim 94" versus "last_action right_1, 2 steps back" is
+  readable by eye, and "dim 94" versus "actions right_1, 2 steps back" is
   the difference between a lead and a number.
   """
-  names = ("joint_pos", "joint_vel", "last_action", "goal_height")
   offset = 0
-  for term, width in zip(names, calib.OBS_TERM_WIDTHS, strict=True):
+  for term, width in profile.obs_terms:
     block = width * history
     if w < offset + block:
       i = w - offset
@@ -92,18 +91,26 @@ def main() -> int:
   policy = runner.get_inference_policy(device=DEV)
 
   sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
-  deployed = StudentPolicy(onnx_path)  # exercises the metadata assertions too
+  # The nominal cube keeps the constructor's range check happy; the per-env
+  # sizes below are what actually go into the observation.
+  deployed = StudentPolicy(onnx_path, cube_half_extent=calib.CUBE_EDGE_MM / 2000.0)
+  print(deployed.describe())
+  # The object's half-edge per env, read the way `object_half_extent` reads it.
+  # Constant over the comparison: nothing resamples the cube inside 60 steps of
+  # one episode, and `cfg.terminations = {}` above removes the early resets.
+  cube = env.scene["cube"]
+  half = env.sim.model.geom_size[:, int(cube.indexing.geom_ids[0]), 0].cpu().numpy()
 
   torch.manual_seed(0)
   obs = wrapped.reset()[0]
   act_diff, obs_diff = [], []
   last_action = np.zeros((N, 11), dtype=np.float32)
-  # (N, H, 34), oldest first. H comes from the checkpoint, so a plain policy
+  # (N, H, frame_dim), oldest first. H comes from the checkpoint, so a plain policy
   # runs the same code with H = 1 and no stacking to get wrong. Safe to fill
   # over the whole window rather than tracking resets: `cfg.terminations = {}`
   # above leaves only the time limit, and STEPS is 60 steps of a much longer
   # episode, so no env resets inside the comparison.
-  hist = np.zeros((N, deployed.history_length, calib.OBS_FRAME_DIM), np.float32)
+  hist = np.zeros((N, deployed.history_length, deployed.profile.frame_dim), np.float32)
   first = True
 
   for _ in range(STEPS):
@@ -128,19 +135,14 @@ def main() -> int:
     jv = robot.data.joint_vel.cpu().numpy()
     # The NEWEST goal_height, which is the last element of either layout.
     gh = student[:, -1]
-    frames = np.stack(
-      [
-        np.concatenate(
-          [
-            jp[i] - np.asarray(calib.DEFAULT_JOINT_POS, np.float32),
-            jv[i],
-            last_action[i],
-            [gh[i]],
-          ]
-        )
-        for i in range(N)
-      ]
-    ).astype(np.float32)
+    # Assembled by the DEPLOYMENT's own code, term list and all, so this check
+    # covers round 2's extra `cube_size` term rather than a hand-written copy of
+    # it. `frame()` reads `last_action` off the policy, so it is set per env
+    # before each call; nothing else here is stateful.
+    frames = np.zeros((N, deployed.profile.frame_dim), np.float32)
+    for i in range(N):
+      deployed.last_action = last_action[i]
+      frames[i] = deployed.frame(jp[i], jv[i], float(gh[i]), float(half[i]))
     # Backfill then roll, exactly as `StudentPolicy.observe` does and as
     # `CircularBuffer` does on the push after a reset.
     if first:
@@ -149,7 +151,7 @@ def main() -> int:
     else:
       hist[:, :-1] = hist[:, 1:]
       hist[:, -1] = frames
-    mine = np.stack([stack_history(hist[i]) for i in range(N)])
+    mine = np.stack([deployed.stack_history(hist[i]) for i in range(N)])
     obs_diff.append(np.abs(mine - student).max())
 
     # 2. Does the ONNX reproduce the torch student on the env's own obs?
@@ -178,7 +180,8 @@ def main() -> int:
     per = np.abs(mine - student).max(axis=0)
     w = int(per.argmax())
     print(
-      f"worst obs dim {w} ({_name_dim(w, deployed.history_length)}) by {per[w]:.3e}"
+      f"worst obs dim {w} ({_name_dim(w, deployed.history_length, deployed.profile)})"
+      f" by {per[w]:.3e}"
     )
   # float32 through two different runtimes; anything at 1e-3 is a real
   # difference in weights or preprocessing, not accumulated rounding.

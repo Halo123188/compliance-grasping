@@ -8,6 +8,36 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- ``deploy/`` runs the four round-3 students (``square_fixH``,
+  ``square_variableH``, ``cube``, ``everyShape``). They pair round 2's action
+  term -- fingers at 0.45, travel to -0.32 -- with a v11 34-d observation and no
+  ``cube_size`` term, so the finger settings can no longer be read off the
+  observation width; ``cube`` and ``everyShape`` also run their first
+  convolution at stride 1, which doubles the spatial-softmax grid off an
+  unchanged 120x160 camera. ``profiles.Profile`` gained ``depth_hw`` (asserted
+  against the exported graph's ``camera`` input, so a mispaired profile raises
+  at load) and ``cnn_stride``; ``scripts/render_sim_depth.py`` takes
+  ``--depth-hw``, and ``deploy/live_view.py`` reads the resolution off the
+  reference render and opens the camera to match, so the live and rendered
+  panels are never two different pictures.
+- ``deploy/profiles.py``: what changes between checkpoints -- the observation
+  layout, the finger action scale, the finger travel limits and the command
+  slew limit -- keyed by the run that produced the weights, and selected from
+  the ONNX filename and the graph rather than edited by hand before each run.
+  Every one of the four fails silently when wrong, and two of them are now
+  corroborated against the file itself (the observation width off the graph, the
+  action scale off the metadata) with a mismatch raising at load. ``run.py``
+  prints the whole profile before anything moves and takes ``--profile`` for a
+  renamed export, where the shape alone cannot say whether the limiter is on.
+- ``deploy/`` runs the round-2 students, which read the object's size. Their
+  observation is 35 wide, with the cube's HALF EDGE in metres between the
+  actions and ``goal_height`` -- both one number, so the swap is a valid vector
+  and the layout is settled against the baked normalizer (dim 33 means 0.0250
+  and 0.0175, the midpoints of the two arms' trained ranges) rather than assumed.
+  ``run.py --cube-mm`` takes the cube's edge in mm, defaults to
+  ``calib.CUBE_EDGE_MM``, and is range-checked against the checkpoint's own
+  trained sizes, because this observation goes through the same normalizer that
+  turned an out-of-range ``goal_height`` into a ``|3641|`` action.
 - ``deploy/`` now runs history-stacked students. The observation width is read
   off the ONNX at load, so a checkpoint whose ``student`` group sets
   ``history_length`` deploys with no flag to set, and feeding it a single frame
@@ -328,6 +358,13 @@ Changed
 Fixed
 ^^^^^
 
+- Fixed the deployed finger clamp, which used the URDF's ±1.6 rad on all four
+  finger joints instead of the travel the training env sets (proximal
+  −0.0754…+1.60 and distal −1.60…+0.10 for the left finger, mirrored on the
+  right). In sim that range is a physical stop the policy is trained inside; on
+  hardware nothing stops the command, so a full-close action could be published
+  well past the drive-through limit. The clamp is per-checkpoint, since round 2
+  opens the proximal bound to −0.32 rad to pinch a 15 mm object.
 - Fixed ``deploy/hand.py``'s gripper checkout path, which was one machine's
   absolute ``/home/yiboc/gripper/firmware/host``. It is now derived from this
   repo's own location, so any host with the two repos side by side works

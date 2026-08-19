@@ -1,4 +1,10 @@
-"""Every number the deployed policy depends on, and where it came from.
+"""Every number the deployed BENCH depends on, and where it came from.
+
+What is NOT here: anything that changes with the checkpoint. The observation
+layout, the action scale, the finger travel and the command slew limit are
+properties of the policy rather than of the robot, and they live in
+`deploy/profiles.py` keyed by the run that produced the weights. Everything in
+this file is the same whichever checkpoint is flown.
 
 Split into three blocks by PROVENANCE, because that is what decides what you may
 change:
@@ -39,9 +45,11 @@ JOINT_NAMES: tuple[str, ...] = (
 ARM_SLICE = slice(0, 7)
 HAND_SLICE = slice(7, 11)
 
-# q_target = DEFAULT_JOINT_POS + ACTION_SCALE * action. There is no clipping
-# anywhere in the trained pipeline (clip_actions is None), so the network's raw
-# output is the command.
+# q_target = DEFAULT_JOINT_POS + profile.action_scale * action. There is no
+# clipping anywhere in the trained pipeline (clip_actions is None), so the
+# network's raw output is the command. The scale is per-checkpoint (round 2
+# moved the fingers from 0.35 to 0.45) and lives in profiles.py; the home pose
+# has not moved since the claw was fitted.
 # FULL PRECISION, from TWOFINGER_ARM_HOME -- not from the ONNX metadata, which
 # `list_to_csv_str` writes at 3 decimals. Reading them off the metadata makes
 # every joint offset wrong by up to 5e-4 rad, which is small enough to look like
@@ -59,25 +67,20 @@ DEFAULT_JOINT_POS: tuple[float, ...] = (
   -0.2746,
   0.0,
 )
-ACTION_SCALE: tuple[float, ...] = (
-  0.40,
-  0.40,
-  0.40,
-  0.40,
-  0.40,
-  0.40,
-  1.10,
-  0.35,
-  0.35,
-  0.35,
-  0.35,
-)
 
-# Joint ranges off the compiled model, in JOINT_NAMES order. The trained
+# ARM joint ranges off the compiled model, in JOINT_NAMES order. The trained
 # pipeline never clips -- soft_joint_pos_limit_factor shapes a reward, it does
 # not bound the command -- so on hardware these are the last line between a
 # blown-up action and the arm's own hard stop.
-JOINT_LIMITS: tuple[tuple[float, float], ...] = (
+#
+# THE FINGERS ARE NOT HERE, and that is the fix rather than an omission. Their
+# range is a TASK parameter the training env sets per arm (`_WIDE_DIRECTIONAL`,
+# and round 2's wider replacement), not a property of the mechanism -- the URDF
+# ships +-1.6 rad on all four, which is far more travel than the linkage wants
+# on either side. In sim the configured range is a physical stop; on hardware
+# nothing stops the command, so the clamp has to be the checkpoint's own range.
+# `profiles.Profile.joint_limits` joins these seven to that checkpoint's four.
+ARM_JOINT_LIMITS: tuple[tuple[float, float], ...] = (
   (-2.8798, +2.8798),  # joint1
   (-2.3562, +2.3562),  # joint2
   (-3.0543, +3.0543),  # joint3
@@ -85,19 +88,7 @@ JOINT_LIMITS: tuple[tuple[float, float], ...] = (
   (-3.0543, +3.0543),  # joint5
   (-1.4835, +4.6251),  # joint6
   (-3.0543, +3.0543),  # joint7
-  (-1.6000, +1.6000),  # left_1
-  (-1.6000, +1.6000),  # left_2
-  (-1.6000, +1.6000),  # right_1
-  (-1.6000, +1.6000),  # right_2
 )
-
-# The student observation, one control step of it. `policy.py` assembles this
-# vector and the ONNX's `obs` input is a whole number of them -- one for the
-# plain checkpoints, four for a history-stacked one. Widths and ORDER both come
-# from the training env's `student` observation group, whose terms are
-# joint_pos, joint_vel, actions, goal_height in exactly this sequence.
-OBS_TERM_WIDTHS: tuple[int, ...] = (11, 11, 11, 1)
-OBS_FRAME_DIM = sum(OBS_TERM_WIDTHS)  # 34
 
 # Abort threshold on the RAW network output, not on the target. Trained actions
 # run to about |5|; the out-of-distribution blow-up this catches was |600|. It
@@ -106,7 +97,7 @@ OBS_FRAME_DIM = sum(OBS_TERM_WIDTHS)  # 34
 # and that distance is a measure of intent, not of malfunction.
 #
 # UNDER A SLEW LIMIT THIS IS THE ONLY GUARD THAT STILL SEES A BLOW-UP. Once
-# RATE_LIMIT is set the published target moves at most `rate / CONTROL_HZ` per
+# the profile's rate limit is on the published target moves at most `rate / HZ` per
 # step, so a 600 rad action and a 3 rad one produce the SAME first command and
 # `--max-jump` cannot tell them apart. It only diverges after the limiter has
 # spent several steps ramping in the wrong direction.
@@ -155,68 +146,21 @@ JOINT_DAMPING: tuple[float, ...] = (
 # so 50 Hz sits comfortably inside both.
 CONTROL_HZ = 50.0
 
-# Command slew limit, rad/s, in JOINT_NAMES order -- the deployment half of the
-# training env's `SmoothedJointPositionAction`. None means no limiting, which is
-# what every checkpoint trained before the speed work expects.
+# WHERE THE SLEW LIMIT WENT. `SmoothedJointPositionAction`'s rate_limit and
+# ema_tau used to live here as one global setting an operator edited between
+# checkpoints. They are `profiles.Profile.rate_limit` / `.ema_tau` now, because
+# they are the checkpoint's property and not the bench's, and because the edit
+# they replaced is the one nobody remembers to make. Read the value off the
+# run's `params/env.yaml` under `actions.joint_pos.rate_limit`, and remember the
+# curriculum scales it -- `Curriculum/rate_limit_schedule/rate_scale` in the
+# run's tensorboard is the multiplier the FINAL checkpoint trained under. Every
+# checkpoint that has a limiter configures the same one and logs rate_scale 1.0
+# from its first iteration to its last, so the configured limits ARE the trained
+# ones.
 #
-# THIS MUST MATCH THE CHECKPOINT'S OWN TRAINING SETTING and nothing checks it
-# for you: the ONNX metadata carries default_joint_pos and action_scale but not
-# this. Read it off the run's `params/env.yaml`, under
-# `actions.joint_pos.rate_limit`, and remember the curriculum scales it --
-# `Curriculum/rate_limit_schedule/rate_scale` in the run's tensorboard is the
-# multiplier the FINAL checkpoint actually trained under. Every checkpoint that
-# has one configures the same limits and logs rate_scale 1.0 from its first
-# iteration to its last, so the configured limits ARE the trained ones:
-#
-#   2026-08-06_20-53-44_s3_dr_fine   None      (no limiter in the action term)
-#   2026-08-10_20-21-25_s_g1_relabel (1.0 x6, 1.5, 3.0 x4)   <- the value below
-#   2026-08-11_06-12-17_s_facelevel  (1.0 x6, 1.5, 3.0 x4)   <- same, no change
-#
-# THE DEPLOYED CHECKPOINT IS `s_g1_relabel`. On 2026-08-11, of the runs allowed
-# to run past the approach it grasped and held in 3 of 4, against 1 of 1 for
-# `s_facelevel`; both stall on the cube at a 34-36 mm jaw gap, which is the
-# signature to look for in a recording. The two share every deployment-relevant
-# setting -- action term, scale, gains, the 34-d student, the depth recipe -- so
-# switching between them is only the --onnx path.
-#   2026-08-10_20-21-25_s_g1_relabel (1.0 x6, 1.5, 3.0 x4)   same
-#   2026-08-11_00-52-56_s_g1_hist    (1.0 x6, 1.5, 3.0 x4)   same
-#
-# So the three limited checkpoints are interchangeable as far as THIS constant
-# goes, and only s3_dr_fine needs it set back to None. All three also lean on
-# the cap about equally lightly -- their final `Loss/saturation` is 0.031,
-# 0.030 and 0.026, i.e. the average request is ~3% over -- which is what the
-# run summary's `[limiter] overdrive` should reproduce on hardware.
-#
-# GETTING THIS WRONG IS NOT A DEGRADATION, IT IS A CRASH. A policy trained with
-# a limiter learns to lean on it -- past the cap only the SIGN of the request
-# reaches the sim, so magnitude stops receiving gradient and the raw action is
-# free to grow. This checkpoint leans on it lightly (its saturation loss ends at
-# 0.031, i.e. the average request is ~3% over the cap) but "lightly" is not a
-# guarantee, and publishing an unlimited version of a limited policy's command
-# is a full-speed move into the bench on the first step. The reverse mistake is
-# merely bad: limiting a policy trained without one makes it lag its own plan.
-#
-# The sim integrates this at its 200 Hz physics step and the robot host at
+# The sim integrates the limit at its 200 Hz physics step and the robot host at
 # CONTROL_HZ. Both bound the same rad/s, so the guarantee is identical; only the
 # fine shape of the ramp inside one control period differs.
-RATE_LIMIT: tuple[float, ...] | None = (
-  1.0,  # joint1
-  1.0,  # joint2
-  1.0,  # joint3
-  1.0,  # joint4
-  1.0,  # joint5
-  1.0,  # joint6
-  1.5,  # joint7, the wrist roll -- needs +-45 deg of travel before contact
-  3.0,  # left_1
-  3.0,  # left_2
-  3.0,  # right_1
-  3.0,  # right_2
-)
-
-# First-order low-pass time constant on the command, seconds, or None. The
-# deployment half of `SmoothedJointPositionAction`'s `ema_tau`. Same matching
-# rule as RATE_LIMIT; both checkpoints above trained with it off.
-EMA_TAU: float | None = None
 
 # Depth observation, exactly as `manipulation_mdp.camera_depth` builds it:
 #   clamp(metres, MIN, CUTOFF) / CUTOFF   -> float32 in [0, 1], shape (1,120,160)
@@ -238,6 +182,14 @@ D435_CROP_WH = (640, 480)
 WORK_SURFACE_Z = 0.400  # top of the foam; cube height is measured from here
 RESTING_Z = 0.425  # centre of a 50 mm cube sitting on it
 ARM_BASE_Z = 0.365  # top of the arm's mounting plate
+
+# The cube on the bench, EDGE in mm, measured with a caliper rather than taken
+# from the scene. Round 2's students are told the object's size (as a HALF
+# extent, in metres) and it is an observation like any other, so a wrong value
+# here is an out-of-distribution input rather than a mis-set preference -- see
+# `run.py --cube-mm`, which defaults to this and range-checks it against the
+# checkpoint's own trained range.
+CUBE_EDGE_MM = 50.0
 
 # goal_height is the one non-privileged part of the lift command: the operator
 # supplies it. Trained over WORK_SURFACE_Z + 0.10 .. 0.20; success is scored at

@@ -12,8 +12,8 @@ wrong observation width and a missing calibration in a second, on a desk.
 Two things this loop deliberately does NOT do, because getting them wrong is
 worse than not having them:
 
-  * It does not ramp into the first target, beyond whatever calib.RATE_LIMIT
-    gives. The policy's first action is computed from the arm's ACTUAL joint
+  * It does not ramp into the first target, beyond whatever the profile's slew
+    limit gives. The policy's first action is computed from the arm's ACTUAL joint
     state, and without a slew limit the first command is `default + scale * a`
     regardless of where the arm currently is -- if the arm is not near the home
     pose when this starts, that first command is a large step. With a limit it
@@ -30,10 +30,11 @@ from __future__ import annotations
 
 import argparse
 import time
+from pathlib import Path
 
 import numpy as np
 
-from . import calib, kinematics
+from . import calib, kinematics, profiles
 from .arm import ArmInterface, ReplayArm
 from .policy import StudentPolicy
 
@@ -99,19 +100,20 @@ class _Record:
   bench range, at 38 KB a frame; 1000 steps is 38 MB before compression.
   """
 
-  def __init__(self, steps: int):
+  def __init__(self, steps: int, depth_hw: tuple[int, int] = calib.DEPTH_HW):
+    self.depth_hw = depth_hw
     self.pos = np.zeros((steps, 11), np.float32)
     self.vel = np.zeros((steps, 11), np.float32)
     self.act = np.zeros((steps, 11), np.float32)
     self.tgt = np.zeros((steps, 11), np.float32)
-    self.img = np.zeros((steps, *calib.DEPTH_HW), np.float16)
+    self.img = np.zeros((steps, *depth_hw), np.float16)
 
   def put(self, i, joint_pos, joint_vel, action, target, depth) -> None:
     self.pos[i], self.vel[i] = joint_pos, joint_vel
     self.act[i], self.tgt[i] = action, target
-    self.img[i] = depth.reshape(calib.DEPTH_HW)  # already [0, 1]
+    self.img[i] = depth.reshape(self.depth_hw)  # already [0, 1]
 
-  def save(self, path: str, n: int, goal_height: float) -> None:
+  def save(self, path: str, n: int, goal_height: float, policy: StudentPolicy) -> None:
     np.savez_compressed(
       path,
       joint_pos=self.pos[:n],
@@ -124,7 +126,12 @@ class _Record:
       depth_cutoff_m=np.float32(calib.DEPTH_CUTOFF_M),
       goal_height=np.float32(goal_height),
       default_joint_pos=np.asarray(calib.DEFAULT_JOINT_POS, np.float32),
-      action_scale=np.asarray(calib.ACTION_SCALE, np.float32),
+      # From the POLICY, not from a module constant: a recording is read back
+      # long after the run, and `default + scale * action` reconstructs nothing
+      # if the scale was another checkpoint's.
+      action_scale=policy.scale,
+      profile=str(policy.profile.name),
+      cube_half_extent=np.float32(policy.cube_half_extent),
     )
 
 
@@ -240,6 +247,27 @@ def main() -> int:
     ),
   )
   ap.add_argument("--goal-height", type=float, default=calib.GOAL_HEIGHT_M)
+  ap.add_argument(
+    "--profile",
+    default=None,
+    choices=sorted(profiles.PROFILES),
+    help=(
+      "which checkpoint family this is. Omit to select it from the run name and "
+      "the graph (deploy/profiles.py); pass it for a renamed export, where the "
+      "shape alone cannot say whether the slew limit is on."
+    ),
+  )
+  ap.add_argument(
+    "--cube-mm",
+    type=float,
+    default=calib.CUBE_EDGE_MM,
+    help=(
+      "the cube's EDGE in mm, measured with a caliper. Round 2's checkpoints "
+      "OBSERVE this (as a half-extent, in metres) and refuse a value outside "
+      "the size range they trained on; the older ones are size-blind and only "
+      "warn, since a cube they never saw is still a cube they cannot grasp."
+    ),
+  )
   ap.add_argument("--steps", type=int, default=1000, help="50 Hz steps to run")
   ap.add_argument(
     "--dry-run", action="store_true", help="no camera, no gripper, no arm"
@@ -307,13 +335,12 @@ def main() -> int:
     help="refuse to start if any arm joint is further than this (rad) from home",
   )
   # The guard that was missing when the arm was driven into the bench. Joint
-  # space cannot express "do not go below the table"; this can. Default is
-  # 10 mm UNDER the foam top, because the policy legitimately touches the foam
-  # (the trained env has a `fingertip_table_contact` penalty, not a
-  # prohibition) and a floor above what the policy does in sim would abort
-  # every normal grasp. It is compared against the pad frame ORIGIN, which
-  # sits above the pad's own lowest point, so the real clearance is smaller
-  # than the number suggests -- deliberately, since erring low costs a run and
+  # space cannot express "do not go below the table"; this can. Default is the
+  # foam top exactly. The policy legitimately touches the foam -- the trained
+  # env has a `fingertip_table_contact` penalty, not a prohibition -- so a floor
+  # ABOVE the surface would abort every normal grasp. It is compared against the
+  # pad frame ORIGIN, which sits above the pad's own lowest point, so the real
+  # clearance is smaller than the number suggests: erring low costs a run and
   # erring high costs the bench.
   ap.add_argument(
     "--floor-z",
@@ -321,9 +348,12 @@ def main() -> int:
     default=calib.WORK_SURFACE_Z - calib.ARM_BASE_Z,
     help=(
       "metres above the arm's base plate; stop if a pad reaches it. Default "
-      "is the foam top itself. In sim this policy never takes the pads below "
-      "0.057 (22 mm of clearance), so a floor at the surface cannot fire on "
-      "behaviour the policy was trained to produce. Negative disables it."
+      "is the foam top itself. Measured on the v11 family, which grasps 42.5-"
+      "57.5 mm cubes, the pads never go below 0.057 -- 22 mm of clearance -- so "
+      "a floor at the surface cannot fire on trained behaviour. THAT MARGIN IS "
+      "NOT THE ROUND-3 MARGIN: those arms grasp objects down to 15 mm tall, "
+      "whose mid-height is ~17 mm lower, which spends most of the 22 mm. See "
+      "--floor-lookahead. Negative disables it."
     ),
   )
   ap.add_argument(
@@ -333,7 +363,12 @@ def main() -> int:
     help=(
       "seconds of descent to subtract from the measured height before "
       "comparing against --floor-z. 0 makes the guard purely reactive, which "
-      "is too late: at 0.4 m/s the pads cross the last 20 mm in one step."
+      "is too late: at 0.4 m/s the pads cross the last 20 mm in one step. THIS "
+      "IS THE KNOB FOR SMALL OBJECTS, not --floor-z: on a 15 mm object the pads "
+      "must reach a few mm above the foam, and 0.15 s of a 0.2 m/s descent is "
+      "30 mm of margin the geometry no longer has. Lower this if the guard "
+      "aborts a grasp that was going fine; do not lower the floor, which is "
+      "where the bench is."
     ),
   )
   ap.add_argument(
@@ -355,7 +390,7 @@ def main() -> int:
     help=(
       "abort if any raw network output exceeds this. Trained actions run to "
       "about |5|; the out-of-distribution blow-up this catches was |600|. This "
-      "is the guard that still works under calib.RATE_LIMIT, which by "
+      "is the guard that still works under the profile's slew limit, which by "
       "construction hides a blown-up action from --max-jump."
     ),
   )
@@ -396,30 +431,53 @@ def main() -> int:
     )
     return 1
 
-  policy = StudentPolicy(args.onnx)
+  # onnxruntime's own missing-file error names the path and nothing else, and
+  # the path is nearly always the mistake: the exports live beside the
+  # checkpoints rather than in the repo, so a bare filename run from here finds
+  # nothing. Cheap to say so, and it costs one stat.
+  if not Path(args.onnx).expanduser().is_file():
+    print(f"!! no such policy: {args.onnx}")
+    siblings = sorted(Path("~/yiboc").expanduser().glob("*.onnx"))
+    if siblings:
+      print("   exports found in ~/yiboc:")
+      for path in siblings:
+        print(f"     {path}")
+    return 1
+
+  # The profile is selected from the run name and the graph, and it decides the
+  # observation layout, the action scale, the finger travel and the slew limit.
+  # Constructed before anything touches hardware so a mismatch -- an unknown
+  # export, a cube outside the trained range -- raises on a desk.
+  try:
+    policy = StudentPolicy(
+      str(Path(args.onnx).expanduser()),
+      profile=None if args.profile is None else profiles.by_name(args.profile),
+      cube_half_extent=args.cube_mm / 2000.0,
+    )
+  except ValueError as e:
+    print(f"!! {e}")
+    return 1
   policy.reset()
   print(f"loaded {args.onnx}")
-  # Read off the graph, not chosen here, so this line is a report rather than a
-  # setting. Worth printing anyway: a history checkpoint and a plain one are the
-  # same file to look at, and the loop that feeds one to the other's observation
-  # assembler would be caught by the input shape -- but only if someone reads it.
-  if policy.history_length > 1:
-    print(
-      f"[policy] observation: {policy.history_length} stacked control steps "
-      f"({policy.history_length * calib.OBS_FRAME_DIM}-d), term-major. The "
-      "history is backfilled from the first frame at reset, as sim does."
-    )
-  # Printed rather than checked, because it CANNOT be checked: the ONNX metadata
-  # does not carry the training env's action term, so this pairing is the
-  # operator's to get right. See calib.RATE_LIMIT.
+  print(policy.describe())
+  # The slew limit is printed rather than checked, because it CANNOT be checked:
+  # the ONNX metadata does not carry the training env's action term, so this
+  # pairing rests on the profile having named the right run.
   if policy.rate_limit is None:
-    print("[policy] command slew limit: OFF (calib.RATE_LIMIT is None)")
-  else:
-    arm_rate = policy.rate_limit[calib.ARM_SLICE]
     print(
-      f"[policy] command slew limit: arm {arm_rate.min():.2f}..{arm_rate.max():.2f} "
-      f"rad/s, fingers {policy.rate_limit[calib.HAND_SLICE].max():.2f} rad/s. This "
-      "MUST match the checkpoint's own training setting; nothing verifies it."
+      "[policy] command slew limit: OFF. Correct only for a checkpoint trained "
+      "without one -- publishing a limited policy's raw request is a full-speed "
+      "move into the bench on the first step."
+    )
+  # A size-blind checkpoint cannot refuse an unfamiliar cube, so say so. The
+  # grasp is the part that fails: the trained closing depth is the one that
+  # suits the sizes below, and nothing in the policy adapts it.
+  lo, hi = policy.profile.cube_edge_mm
+  if not policy.profile.observes_cube_size and not lo <= args.cube_mm <= hi:
+    print(
+      f"[warn] --cube-mm {args.cube_mm:.1f} is outside {policy.profile.name}'s "
+      f"trained {lo:.1f}-{hi:.1f} mm, and this checkpoint cannot see the size. "
+      "It will close to the depth it always closes to."
     )
 
   home = np.asarray(calib.DEFAULT_JOINT_POS)
@@ -444,14 +502,14 @@ def main() -> int:
   stages = np.zeros((4, args.steps))
   loop_dt = np.zeros(args.steps)
   # Worst joint's limiter overdrive per step. The one number that says whether
-  # calib.RATE_LIMIT is the setting this checkpoint was trained under: a policy
+  # the profile's slew limit is the one this checkpoint trained under: a policy
   # that trained against this cap requests a little more than it, a policy that
   # trained against a looser one (or none) requests far more, every step.
   overdrive = np.zeros(args.steps)
   h_prev: float | None = None  # last gripper height, for the descent rate
   done = 0  # steps that completed, i.e. reached the command
   seen = 0  # steps whose OBSERVATION was recorded, which includes the abort
-  rec = _Record(args.steps) if args.record else None
+  rec = _Record(args.steps, policy.depth_hw) if args.record else None
   try:
     hand = build_hand(args.gripper_port, args.dry_run, args.no_hand, args.grip_cap)
     max_vel = args.arm_max_vel * args.speed
@@ -504,24 +562,31 @@ def main() -> int:
       print(f"[hand] at {got.round(3)} rad, wanted {want.round(3)}")
 
     if args.dry_run:
-      depth_source = _synthetic_depth
+
+      def depth_source() -> np.ndarray:
+        return _synthetic_depth(policy.depth_hw)
     else:
       from .perception import RealSenseDepth
 
+      # The frame SIZE is the checkpoint's, not the camera's: the stream and the
+      # centre crop -- i.e. the field of view -- are the same for every
+      # checkpoint, and only the downsample factor moves.
       camera = RealSenseDepth(
         fps=args.camera_fps,
         threaded=not args.camera_blocking,
         preset=args.camera_preset,
+        out_hw=policy.depth_hw,
       )
       mode = "blocking" if args.camera_blocking else "threaded"
-      print(f"[cam] D435 depth at {args.camera_fps} fps, {mode}")
+      h, w = policy.depth_hw
+      print(f"[cam] D435 depth at {args.camera_fps} fps, {mode}, -> {h}x{w}")
       depth_source = camera.read
 
     # Seed the command smoother from where the joints ACTUALLY are, AFTER the
     # home check and the hand's ramp -- those are the deployment's equivalent of
     # the sim's reset events, and the sim seeds from the post-reset pose.
-    # Harmless when calib.RATE_LIMIT and EMA_TAU are both None; when they are
-    # set, seeding from the nominal home instead would make the limiter spend
+    # Harmless when the profile has neither a limiter nor an EMA; when it has
+    # one, seeding from the nominal home instead would make the limiter spend
     # the first steps of every trial ramping across the home check's tolerance,
     # a scripted move no action asked for.
     q_arm, _ = arm.read()
@@ -624,8 +689,8 @@ def main() -> int:
       # `rate / CONTROL_HZ` of new motion per step -- 20 mrad on the arm -- so a
       # |600| action and a |3| action produce the SAME first command and
       # --max-jump only diverges after several steps of ramping the wrong way.
-      # policy.act() separately clamps the target to calib.JOINT_LIMITS, so an
-      # action that is merely large still cannot command past a hard stop.
+      # policy.act() separately clamps the target to the profile's own joint
+      # limits, so an action that is merely large cannot command past a stop.
       worst = float(np.abs(policy.last_action).max())
       if worst > args.max_action:
         j = int(np.abs(policy.last_action).argmax())
@@ -695,7 +760,7 @@ def main() -> int:
     overdrive, done, policy, live=args.robot_sn is not None and not args.dry_run
   )
   if rec is not None and seen:
-    rec.save(args.record, seen, args.goal_height)
+    rec.save(args.record, seen, args.goal_height, policy)
     print(f"[record] {seen} steps -> {args.record}")
   return 0
 
@@ -732,7 +797,7 @@ def _report_timing(names, stages, loop_dt, done, period, late, camera) -> None:
 def _report_overdrive(overdrive, done: int, policy: StudentPolicy, live: bool) -> None:
   """How hard the policy leaned on the slew limit, and whether that is normal.
 
-  There is no way to CHECK calib.RATE_LIMIT against the checkpoint -- the ONNX
+  There is no way to CHECK the profile's rate limit against the weights -- the ONNX
   metadata does not carry the training env's action term -- so this is the
   closest thing to a verification the deployment has. A policy trained against
   this cap asks for a little more than it and gets held back rarely; one trained
@@ -758,18 +823,24 @@ def _report_overdrive(overdrive, done: int, policy: StudentPolicy, live: bool) -
   elif np.percentile(o, 95) > 2.0:
     print(
       "  ^ the policy is asking for several times the cap as a matter of course."
-      " Either calib.RATE_LIMIT is tighter than the checkpoint trained under, or"
-      " the observation is wrong. Check the run's env.yaml before flying it again."
+      " Either the profile's rate limit is tighter than the checkpoint trained"
+      " under, or the observation is wrong. Check the run's env.yaml first."
     )
 
 
-def _synthetic_depth() -> np.ndarray:
-  """A flat bench at 0.6 m with a box on it -- shape and range only, not a scene."""
-  d = np.full(calib.DEPTH_HW, 0.6, dtype=np.float32)
-  d[60:80, 70:95] = 0.52
+def _synthetic_depth(hw: tuple[int, int] = calib.DEPTH_HW) -> np.ndarray:
+  """A flat bench at 0.6 m with a box on it -- shape and range only, not a scene.
+
+  Sized to the checkpoint, so `--dry-run` exercises the same tensor shape the
+  bench would hand it. The box is placed in fractions of the frame rather than
+  in pixels, so it lands in the same place at either resolution.
+  """
+  h, w = hw
+  d = np.full(hw, 0.6, dtype=np.float32)
+  d[h // 2 : (h * 2) // 3, (w * 7) // 16 : (w * 19) // 32] = 0.52
   return (
     np.clip(d, calib.DEPTH_MIN_M, calib.DEPTH_CUTOFF_M) / calib.DEPTH_CUTOFF_M
-  ).reshape(1, *calib.DEPTH_HW)
+  ).reshape(1, *hw)
 
 
 if __name__ == "__main__":

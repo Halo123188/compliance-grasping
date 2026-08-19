@@ -10,6 +10,11 @@ the limiter once per physics substep at 200 Hz and the robot host once per
 control step at 50 Hz, so the two never take the same steps and only the rad/s
 bound is shared.
 
+Also covers `deploy/profiles.py`, which decides WHICH of those settings apply.
+Everything the profile carries -- the observation layout, the action scale, the
+finger travel, the limiter -- fails silently when it is wrong, so the tests are
+about selecting the right one and refusing to guess.
+
 The ONNX session is stubbed rather than the policy subclassed, so what runs here
 is the real `act()` down to the joint-limit clamp it ends with.
 """
@@ -20,12 +25,18 @@ from typing import cast
 
 import numpy as np
 import pytest
-from deploy import calib
+from deploy import calib, profiles
 from deploy.policy import StudentPolicy
 
 DT = 1.0 / calib.CONTROL_HZ
-SCALE = np.asarray(calib.ACTION_SCALE, dtype=np.float32)
 HOME = np.asarray(calib.DEFAULT_JOINT_POS, dtype=np.float32)
+# The family every deployed checkpoint before round 2 belongs to; the round-2
+# arms get their own tests below rather than being parametrised over, because
+# what changed between them is exactly what these tests are about.
+V11 = profiles.PROFILES["v11"]
+R2 = profiles.PROFILES["r2-small"]
+SCALE = np.asarray(V11.action_scale, dtype=np.float32)
+FRAME = V11.frame_dim
 
 
 class _StubInput:
@@ -36,10 +47,22 @@ class _StubInput:
 class _StubSession:
   """Enough of onnxruntime.InferenceSession to load and to return one action."""
 
-  def __init__(self, action: np.ndarray, history: int = 1, width: int | None = None):
+  def __init__(
+    self,
+    action: np.ndarray,
+    history: int = 1,
+    width: int | None = None,
+    profile: profiles.Profile = V11,
+    camera_hw: tuple[int, int] | None = None,
+  ):
     self.action = np.asarray(action, dtype=np.float32).reshape(1, 11)
     self.history = history
-    self.width = history * calib.OBS_FRAME_DIM if width is None else width
+    self.profile = profile
+    self.width = history * profile.frame_dim if width is None else width
+    # The depth frame is a property of the GRAPH -- it is the CNN's own input
+    # size -- so the stub follows the profile unless a test is about the two
+    # disagreeing.
+    self.camera_hw = profile.depth_hw if camera_hw is None else camera_hw
     self.last_obs: np.ndarray | None = None
 
   @staticmethod
@@ -55,7 +78,7 @@ class _StubSession:
     meta = {
       "joint_names": names,
       "default_joint_pos": self._csv(calib.DEFAULT_JOINT_POS),
-      "action_scale": self._csv(calib.ACTION_SCALE),
+      "action_scale": self._csv(self.profile.action_scale),
       "joint_stiffness": self._csv(calib.JOINT_STIFFNESS),
       "joint_damping": self._csv(calib.JOINT_DAMPING),
     }
@@ -64,7 +87,7 @@ class _StubSession:
   def get_inputs(self):
     return [
       _StubInput("obs", [1, self.width]),
-      _StubInput("camera", [1, 1, *calib.DEPTH_HW]),
+      _StubInput("camera", [1, 1, *self.camera_hw]),
     ]
 
   def run(self, names, feeds):  # noqa: ARG002 -- the graph is what is stubbed
@@ -74,26 +97,36 @@ class _StubSession:
 
 @pytest.fixture
 def make_policy(monkeypatch):
-  def _make(action, history: int = 1, width: int | None = None) -> StudentPolicy:
-    session = _StubSession(action, history, width)
+  def _make(
+    action,
+    history: int = 1,
+    width: int | None = None,
+    profile: profiles.Profile = V11,
+    name: str | None = None,
+    camera_hw: tuple[int, int] | None = None,
+    **kwargs,
+  ) -> StudentPolicy:
+    session = _StubSession(action, history, width, profile, camera_hw)
     monkeypatch.setattr(
       "deploy.policy.ort.InferenceSession", lambda *a, **k: session, raising=True
     )
-    return StudentPolicy("stub.onnx")
+    # Named after one of the profile's own runs by default, so selection is
+    # exercised end to end rather than handed the answer.
+    return StudentPolicy(f"{name or profile.runs[0]}.onnx", **kwargs)
 
   return _make
 
 
 @pytest.fixture
 def limit() -> np.ndarray:
-  if calib.RATE_LIMIT is None:
-    pytest.skip("calib.RATE_LIMIT is None; this checkpoint has no limiter")
-  return np.asarray(calib.RATE_LIMIT, dtype=np.float32)
+  assert V11.rate_limit is not None
+  return np.asarray(V11.rate_limit, dtype=np.float32)
 
 
 def _drive(policy: StudentPolicy, steps: int) -> np.ndarray:
   """Run `steps` inferences and return the last published command."""
-  obs, depth = np.zeros(34, np.float32), np.zeros((1, *calib.DEPTH_HW), np.float32)
+  obs = np.zeros(policy.profile.frame_dim, np.float32)
+  depth = np.zeros((1, *policy.depth_hw), np.float32)
   cmd = policy._cmd.copy()
   for _ in range(steps):
     cmd = policy.act(obs, depth)
@@ -104,7 +137,8 @@ def test_the_command_never_moves_faster_than_the_cap(make_policy, limit):
   """The guarantee the whole term exists for, under a saturating action."""
   policy = make_policy(np.full(11, 8.0))  # ~2x the reach of a trained action
   policy.reset(HOME)
-  obs, depth = np.zeros(34, np.float32), np.zeros((1, *calib.DEPTH_HW), np.float32)
+  obs = np.zeros(FRAME, np.float32)
+  depth = np.zeros((1, *policy.depth_hw), np.float32)
   prev = HOME.copy()
   for _ in range(50):
     cmd = policy.act(obs, depth)
@@ -158,7 +192,7 @@ def test_the_raw_action_is_what_is_fed_back_not_the_command(make_policy, limit):
 
 def test_the_joint_limit_clamp_is_the_last_thing_applied(make_policy):
   """Whatever the smoother does, it cannot publish past a hard stop."""
-  limits = np.asarray(calib.JOINT_LIMITS, dtype=np.float32)
+  limits = np.asarray(V11.joint_limits, dtype=np.float32)
   policy = make_policy(np.full(11, 1e4))
   policy.reset(HOME)
   cmd = _drive(policy, 2000)  # long enough for the limiter to ramp into a stop
@@ -169,7 +203,7 @@ def test_the_joint_limit_clamp_is_the_last_thing_applied(make_policy):
 def test_ema_is_off_unless_calib_says_otherwise(make_policy):
   """The paired checkpoints train with ema_tau null; a stray value is a bug."""
   policy = make_policy(np.zeros(11))
-  assert (calib.EMA_TAU is None) == (policy.ema_alpha == 0.0)
+  assert (V11.ema_tau is None) == (policy.ema_alpha == 0.0)
 
 
 # --- the history-stacked student ---------------------------------------------
@@ -190,7 +224,7 @@ def test_the_history_depth_comes_from_the_graph(make_policy):
 
 def test_a_width_that_is_not_whole_frames_is_refused(make_policy):
   """100 is not a history of anything, and must not be rounded to one."""
-  with pytest.raises(ValueError, match="multiple of 34"):
+  with pytest.raises(ValueError, match="whole number"):
     make_policy(np.zeros(11), width=100)
 
 
@@ -201,7 +235,7 @@ def _frames(policy: StudentPolicy) -> np.ndarray:
   obs = session.last_obs.reshape(-1)
   h, out = policy.history_length, []
   offset = 0
-  for width in calib.OBS_TERM_WIDTHS:
+  for width in policy.profile.term_widths:
     out.append(obs[offset : offset + width * h].reshape(h, width))
     offset += width * h
   return np.concatenate(out, axis=1)
@@ -213,7 +247,7 @@ def test_the_terms_are_laid_out_term_major_not_frame_major(make_policy):
   policy.reset(HOME)
   obs = policy.observe(HOME + 0.1, np.full(11, 2.0), goal_height=0.55)
 
-  assert obs.shape == (HISTORY * calib.OBS_FRAME_DIM,)
+  assert obs.shape == (HISTORY * FRAME,)
   # goal_height is one number per frame, so under term-major it is the LAST
   # four dimensions and under frame-major it would be dims 33/67/101/135.
   np.testing.assert_allclose(obs[-HISTORY:], 0.55)
@@ -236,7 +270,7 @@ def test_the_newest_frame_is_last_and_one_step_is_one_push(make_policy):
   """Chronological, oldest first -- what `CircularBuffer.buffer` returns."""
   policy = make_policy(np.zeros(11), history=HISTORY)
   policy.reset(HOME)
-  depth = np.zeros((1, *calib.DEPTH_HW), np.float32)
+  depth = np.zeros((1, *policy.depth_hw), np.float32)
   for q in (0.1, 0.2, 0.3, 0.4, 0.5):
     policy.act(policy.observe(HOME + q, np.zeros(11)), depth)
 
@@ -263,3 +297,205 @@ def test_the_plain_students_are_untouched_by_any_of_this(make_policy):
   obs = policy.observe(HOME + 0.1, np.full(11, 2.0), goal_height=0.55)
   expected = np.concatenate([np.full(11, 0.1), np.full(11, 2.0), np.zeros(11), [0.55]])
   np.testing.assert_allclose(obs, expected, atol=1e-6)
+
+
+# --- round 2: the size-aware students -----------------------------------------
+# `d-R2-Reach` and `d-R2-Small` read the object's half-edge between the actions
+# and goal_height, command a 0.45 finger scale instead of 0.35, and are allowed
+# down to -0.32 rad of proximal travel instead of -0.0754. All three are silent
+# when wrong: the observation is a valid vector, the scale is a 29% error in the
+# grip direction, and the travel is a clamp that simply never fires.
+
+CUBE = 0.025  # half-edge, metres: the 50 mm bench cube
+
+
+def test_the_cube_size_goes_between_the_actions_and_the_goal(make_policy):
+  """The env inserts the term there, and nothing downstream can tell."""
+  policy = make_policy(np.zeros(11), profile=R2, cube_half_extent=CUBE)
+  policy.reset(HOME)
+  obs = policy.observe(HOME + 0.1, np.full(11, 2.0), goal_height=0.55)
+
+  assert obs.shape == (35,)
+  np.testing.assert_allclose(obs[33], CUBE)
+  np.testing.assert_allclose(obs[34], 0.55)
+
+
+def test_the_cube_size_keeps_its_own_history_slot(make_policy):
+  """Term-major applies to it like any other term, not to the frame."""
+  policy = make_policy(np.zeros(11), history=4, profile=R2, cube_half_extent=CUBE)
+  policy.reset(HOME)
+  obs = policy.observe(HOME, np.zeros(11), goal_height=0.55)
+
+  assert obs.shape == (4 * 35,)
+  np.testing.assert_allclose(obs[132:136], CUBE)  # cube_size x4
+  np.testing.assert_allclose(obs[136:140], 0.55)  # then goal_height x4
+
+
+def test_a_size_aware_checkpoint_refuses_to_load_without_a_size(make_policy):
+  """There is no default for an observation; a wrong one is out of distribution."""
+  with pytest.raises(ValueError, match="observes the object's size"):
+    make_policy(np.zeros(11), profile=R2)
+
+
+def test_a_cube_outside_the_trained_range_is_refused(make_policy):
+  """The mm/m and edge/half-edge mistakes both land tens of sigma out."""
+  with pytest.raises(ValueError, match="outside r2-small's trained range"):
+    make_policy(np.zeros(11), profile=R2, cube_half_extent=0.050)  # edge, not half
+
+
+def test_the_finger_clamp_is_the_checkpoint_s_travel_not_the_urdf_s(make_policy):
+  """Sim STOPS the joint at its range; hardware publishes the command anyway."""
+  v11 = np.asarray(V11.joint_limits, np.float32)
+  r2 = np.asarray(R2.joint_limits, np.float32)
+  # left_1 closes negative, right_1 positive: the range mirrors, it is not
+  # symmetric, and both are far inside the URDF's +-1.6.
+  np.testing.assert_allclose(v11[7], (-0.0754, 1.60))
+  np.testing.assert_allclose(v11[9], (-1.60, 0.0754))
+  np.testing.assert_allclose(r2[7], (-0.32, 1.60))
+  np.testing.assert_allclose(r2[9], (-1.60, 0.32))
+
+  policy = make_policy(np.full(11, -1e4), profile=R2, cube_half_extent=CUBE)
+  policy.reset(HOME)
+  cmd = _drive(policy, 2000)
+  assert cmd[7] == pytest.approx(-0.32)
+  assert cmd[9] == pytest.approx(-1.60)
+
+
+def test_round_two_commands_the_wider_finger_scale(make_policy):
+  """0.45, not 0.35. Read off the metadata and asserted against the profile."""
+  policy = make_policy(np.zeros(11), profile=R2, cube_half_extent=CUBE)
+  np.testing.assert_allclose(policy.scale[calib.HAND_SLICE], 0.45)
+
+
+# --- picking the profile ------------------------------------------------------
+
+
+def test_an_unrenamed_export_selects_its_own_profile():
+  """The exporter writes `<run>.onnx`, so the file names the arm it came from."""
+  for name, profile in profiles.PROFILES.items():
+    for run in profile.runs:
+      chosen = profiles.select(
+        f"/logs/{run}/{run}.onnx",
+        np.asarray(profile.action_scale, np.float32),
+        profile.frame_dim,
+      )
+      assert chosen.name == name
+
+
+def test_a_renamed_export_falls_back_on_shape_but_only_where_it_is_safe():
+  """34-d at 0.35 could be limited or unlimited; the SAFE one wins."""
+  chosen = profiles.select(
+    "policy.onnx", np.asarray(V11.action_scale, np.float32), V11.frame_dim
+  )
+  # Limiting an unlimited policy makes it lag; publishing an unlimited version
+  # of a limited one is a full-speed command into the bench.
+  assert chosen.rate_limit is not None
+  assert chosen.name == "v11"
+
+
+def test_a_shape_no_profile_claims_is_refused_rather_than_approximated():
+  """A new arm is an entry in profiles.py, not the nearest existing one."""
+  with pytest.raises(ValueError, match="no profile matches"):
+    profiles.select("policy.onnx", np.full(11, 0.7, np.float32), 34)
+
+
+def test_the_metadata_still_has_to_agree_with_the_chosen_profile(make_policy):
+  """An r2-named export whose weights carry 0.35 is a mislabelled file.
+
+  The name picks the profile and the metadata then has to corroborate it, so a
+  run directory renamed onto the wrong checkpoint raises instead of commanding
+  the fingers 29% harder than they were trained to be.
+  """
+  with pytest.raises(ValueError, match="action_scale mismatch"):
+    make_policy(
+      np.zeros(11),
+      profile=V11,  # what the exported weights say
+      name=R2.runs[0],  # what the file claims to be
+      width=R2.frame_dim,
+      cube_half_extent=CUBE,
+    )
+
+
+# --- round 3: a round-2 action term on a v11 observation ----------------------
+
+CUBE_R3 = profiles.PROFILES["cube"]
+SHAPES = profiles.PROFILES["everyshape"]
+ROUND_3 = ("square-fixh", "square-varh", "cube", "everyshape")
+
+
+def test_the_round_3_arms_pair_round_2_travel_with_a_v11_frame():
+  """The trap these four set, and the reason a profile is not a date.
+
+  Rounds 1 and 2 made it look like the action term could be read off the
+  observation: 34-d meant fingers at 0.35 stopping at -0.0754, 35-d meant 0.45
+  stopping at -0.32. Round 3 breaks the pairing -- round 2's fingers on a v11
+  frame, with no `cube_size` term at all -- so a profile inferred from the
+  layout would clamp these at -0.0754, where the closure a 15 mm object needs
+  cannot be commanded and nothing reports a fault.
+  """
+  for name in ROUND_3:
+    profile = profiles.PROFILES[name]
+    assert profile.frame_dim == V11.frame_dim
+    assert not profile.observes_cube_size
+    assert profile.action_scale[calib.HAND_SLICE] == (0.45, 0.45, 0.45, 0.45)
+    assert profile.finger_range[0][0] == pytest.approx(-0.32)
+
+
+def test_an_unnamed_round_3_export_is_refused_rather_than_flown():
+  """(34-d, 0.45) is four profiles and no fallback, so the shape cannot decide.
+
+  A renamed export of one of these must not land on v11 -- the scale differs --
+  nor on r2, whose frame is a term wider. There is nothing left to guess with,
+  which is the intended outcome: `--profile` is how the operator says which.
+  """
+  with pytest.raises(ValueError, match="Pass --profile"):
+    profiles.select(
+      "policy.onnx", np.asarray(CUBE_R3.action_scale, np.float32), CUBE_R3.frame_dim
+    )
+  assert not any(profiles.PROFILES[n].fallback for n in ROUND_3)
+
+
+def test_the_shape_arm_stacks_four_frames(make_policy):
+  """136-d obs on the same 34-d frame every other round-3 arm reads once."""
+  policy = make_policy(np.zeros(11), history=4, profile=SHAPES)
+  assert (policy.history_length, policy.depth_hw) == (4, (120, 160))
+  obs = policy.observe(HOME, np.zeros(11, np.float32))
+  assert obs.shape == (4 * SHAPES.frame_dim,)
+
+
+# --- the depth frame is the checkpoint's, not the bench's ---------------------
+
+
+def test_a_profile_that_disagrees_with_the_graph_is_refused(make_policy):
+  """The graph wins. It carries the CNN, so it carries the input size.
+
+  Every checkpoint so far reads 120x160, so this has never fired in anger --
+  but it is what keeps a future frame change from being a policy that quietly
+  reads a squashed picture, and it is checked rather than trusted because the
+  graph can settle it and nothing else in the profile can.
+  """
+  with pytest.raises(ValueError, match="expects camera"):
+    make_policy(np.zeros(11), profile=CUBE_R3, camera_hw=(240, 320))
+
+
+def test_the_declared_frame_and_stride_make_the_grid_the_weights_carry():
+  """The pair, not either half, is what identifies the vision front end.
+
+  A 30x40 spatial-softmax grid is a buffer in the checkpoint, and it is a
+  120x160 frame at stride 1/2/2 or a 240x320 one at 2/2/2 with equal validity --
+  both rebuild and both load with `strict=True`. Declaring both here is what
+  lets `scripts/export_student_onnx.py` check one against the other; these are
+  the grids the four round-3 checkpoints actually carry.
+  """
+  grids = {
+    "square-fixh": (15, 20),
+    "square-varh": (15, 20),
+    "cube": (30, 40),
+    "everyshape": (30, 40),
+  }
+  for name, want in grids.items():
+    profile = profiles.PROFILES[name]
+    h, w = profile.depth_hw
+    for stride in profile.cnn_stride:  # same padding: ceil(dim / stride)
+      h, w = -(-h // stride), -(-w // stride)
+    assert (h, w) == want, name
