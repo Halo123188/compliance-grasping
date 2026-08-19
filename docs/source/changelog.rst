@@ -8,6 +8,18 @@ Upcoming version (not yet released)
 Added
 ^^^^^
 
+- ``deploy/run.py --record`` now carries the four finger motors' current, and
+  the run prints a ``[grip]`` summary of it against ``--grip-cap`` whether or
+  not the recording was on. The gripper runs current-based position control, so
+  the cap IS the grip force, and without this column a finger that stopped short
+  of its goal was undiagnosable: being held by the object and being stuck look
+  the same in position and velocity. Eleven bench recordings of the round-3
+  arms all end with the object pushed sideways and still on the surface, and
+  which of the two that is decides whether the fix is ``--grip-cap`` or the
+  linkage. The current comes from the same OBS packet as the pose and velocity
+  beside it, and is reported per motor rather than aggregated, because the
+  asymmetric case -- one pad leaning on the object while the other never
+  arrives -- is how an object leaves the jaw instead of being lifted.
 - Added ``scripts/wide_eval_sweep.py`` and ``scripts/wide_plot_sweep.py``, which
   split a policy's single deployment success number by object SIZE and by WHERE
   on the bench the object spawned. ``eval_deploy`` averages over the whole

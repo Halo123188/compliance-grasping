@@ -731,8 +731,22 @@ gripper band. Binds to localhost only; it serves the robot's camera with no
 authentication.
 
 `--record run.npz` on `deploy/run.py` writes every step's joints, raw action,
-commanded target and depth frame — including the aborting step — which is the
-only way to see what the policy was looking at when it did something odd.
+commanded target, depth frame and the four finger motors' **current** —
+including the aborting step — which is the only way to see what the policy was
+looking at when it did something odd.
+
+The current is the column that says which kind of failed grasp you had, and the
+run prints a `[grip]` summary of it against `--grip-cap` whether or not
+`--record` was on. Mode 5 is a position goal plus a current limit, so the cap
+*is* the grip force, and a finger stopped short of its goal is either being held
+by the object or is stuck — identical in position and velocity, opposite in
+current. At the cap means the object stopped it, so an object that still did not
+come up is a weak squeeze and `--grip-cap` is the knob. Well under the cap means
+the motor was not pushing at all, so the obstruction is in the linkage and
+raising the cap changes nothing. It is reported per motor rather than
+aggregated, because the case to look for is the asymmetric one: one pad leaning
+on the object while the other never arrives is how an object gets pushed out of
+the jaw instead of picked up.
 
 ### Measuring the camera pose against the arm
 

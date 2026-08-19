@@ -105,6 +105,9 @@ class Hand:
     self.k = np.asarray(calib.COUNTS_PER_RAD, dtype=np.float64)
     self.b = np.asarray(calib.COUNTS_AT_ZERO_RAD, dtype=np.float64)
     self.cap_a = cap_a
+    # Refreshed by every exchange -- see `currents_a` for why it is worth
+    # keeping. Reporting only, so it never gates a command.
+    self.last_current_a = np.zeros(4, dtype=np.float32)
     self.link = _import_link()(port=port)
     self.counts_per_rev = self.link.info_["counts_per_rev"]
     if self.link.n != 4:
@@ -133,6 +136,26 @@ class Hand:
     """Pad separation for a proximal joint angle, from the sim's measured fit."""
     return calib.APERTURE_A_MM + calib.APERTURE_B_MM * q_proximal
 
+  @staticmethod
+  def currents_a(obs: dict) -> np.ndarray:
+    """(4,) per-motor current in amperes, protocol motor order.
+
+    SIGNED: the protocol packs it as an int16 and the sign is which way the
+    motor is pushing, so a finger holding a grip shows a steady non-zero value
+    rather than drifting back to nothing. Compare the MAGNITUDE against
+    `cap_a`.
+
+    This is the one measurement that separates the two ways a finger stops
+    short of its goal, and they want opposite responses. A finger at its cap is
+    being held by something -- that is how a position command becomes a force,
+    and it is the intended behaviour of a grasp. A finger that is stationary,
+    far from its goal, and drawing well UNDER the cap is stuck: the motor is
+    not even trying, so the obstruction is upstream of it. Position and
+    velocity alone cannot tell those apart, which is why a recording without
+    this column leaves a failed grasp undiagnosable.
+    """
+    return np.array([m.get("cur_ma", 0) for m in obs["motors"]], np.float32) / 1000.0
+
   # --- control -------------------------------------------------------------
   def step(self, q_target: np.ndarray) -> dict:
     """Command 4 finger targets in sim radians; return the decoded OBS.
@@ -148,6 +171,7 @@ class Hand:
     )
     if obs.get("fault"):
       raise RuntimeError(self._fault_message(obs))
+    self.last_current_a = self.currents_a(obs)
     return obs
 
   # Fault enum, from the controller's Gripper.h. Named here rather than left as
@@ -228,6 +252,7 @@ class Hand:
     the per-motor sign flip, and dropping it reports a closing finger as opening.
     """
     obs = self.link.poll()
+    self.last_current_a = self.currents_a(obs)
     return self.decode(obs)
 
   def decode(self, obs: dict) -> tuple[np.ndarray, np.ndarray]:

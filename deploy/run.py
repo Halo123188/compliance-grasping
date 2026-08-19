@@ -107,13 +107,25 @@ class _Record:
     self.act = np.zeros((steps, 11), np.float32)
     self.tgt = np.zeros((steps, 11), np.float32)
     self.img = np.zeros((steps, *depth_hw), np.float16)
+    # The four finger motors' current, from the same OBS packet as the pose and
+    # the velocity beside it, so the three are one consistent reading of one
+    # instant rather than three polls of a moving hand.
+    self.cur = np.zeros((steps, 4), np.float32)
 
-  def put(self, i, joint_pos, joint_vel, action, target, depth) -> None:
+  def put(self, i, joint_pos, joint_vel, action, target, depth, current_a) -> None:
     self.pos[i], self.vel[i] = joint_pos, joint_vel
     self.act[i], self.tgt[i] = action, target
     self.img[i] = depth.reshape(self.depth_hw)  # already [0, 1]
+    self.cur[i] = current_a
 
-  def save(self, path: str, n: int, goal_height: float, policy: StudentPolicy) -> None:
+  def save(
+    self,
+    path: str,
+    n: int,
+    goal_height: float,
+    policy: StudentPolicy,
+    cap_a: float,
+  ) -> None:
     np.savez_compressed(
       path,
       joint_pos=self.pos[:n],
@@ -132,6 +144,13 @@ class _Record:
       action_scale=policy.scale,
       profile=str(policy.profile.name),
       cube_half_extent=np.float32(policy.cube_half_extent),
+      # Signed, amperes, in JOINT_NAMES[7:11] order. Zero for the whole run on
+      # `--no-hand`, where there is no gripper to report one.
+      finger_current_a=self.cur[:n],
+      # The cap those currents are to be read against. It is an operator flag,
+      # so a recording that did not carry it could not be compared with the
+      # next one.
+      grip_cap_a=np.float32(cap_a),
     )
 
 
@@ -322,8 +341,9 @@ def main() -> int:
     default=None,
     metavar="PATH.npz",
     help=(
-      "log every step -- measured joints, raw action, commanded target and the "
-      "depth frame -- and write it on the way out, including after an abort. "
+      "log every step -- measured joints, raw action, commanded target, the "
+      "depth frame and the four finger motors' current -- and write it on the "
+      "way out, including after an abort. "
       "Depth is float16, about 38 MB per 1000 steps, which resolves the "
       "millimetre-scale depth bias this policy is actually sensitive to; the "
       "earlier uint8 quantised to 12 mm and hid exactly that."
@@ -525,6 +545,10 @@ def main() -> int:
   # that trained against this cap requests a little more than it, a policy that
   # trained against a looser one (or none) requests far more, every step.
   overdrive = np.zeros(args.steps)
+  # The four finger currents per step, kept whether or not `--record` is on,
+  # because the summary they feed is the one that says which KIND of failed
+  # grasp this was and it should not need a flag set in advance.
+  finger_cur = np.zeros((args.steps, 4), np.float32)
   h_prev: float | None = None  # last gripper height, for the descent rate
   done = 0  # steps that completed, i.e. reached the command
   seen = 0  # steps whose OBSERVATION was recorded, which includes the abort
@@ -632,6 +656,10 @@ def main() -> int:
       q_arm, v_arm = arm.read()
       joint_pos = np.concatenate([q_arm, q_hand])
       joint_vel = np.concatenate([v_arm, v_hand])
+      # From the very packet `q_hand` and `v_hand` were decoded out of, so all
+      # three describe one instant rather than three polls of a moving hand.
+      if hand is not None:
+        finger_cur[i] = hand.last_current_a
       t_sensors = time.perf_counter()
 
       target = policy.step(joint_pos, joint_vel, depth, args.goal_height)
@@ -641,7 +669,9 @@ def main() -> int:
       if rec is not None:
         # Recorded BEFORE the --max-jump guard, so the aborting step -- the one
         # worth looking at -- is in the file rather than the one before it.
-        rec.put(i, joint_pos, joint_vel, policy.last_action, target, depth)
+        rec.put(
+          i, joint_pos, joint_vel, policy.last_action, target, depth, finger_cur[i]
+        )
         seen = i + 1
 
       # CARTESIAN FLOOR WITH STOPPING DISTANCE. This guard exists because of a
@@ -778,8 +808,9 @@ def main() -> int:
   _report_overdrive(
     overdrive, done, policy, live=args.robot_sn is not None and not args.dry_run
   )
+  _report_grip(finger_cur, seen, args.grip_cap, live=hand is not None)
   if rec is not None and seen:
-    rec.save(args.record, seen, args.goal_height, policy)
+    rec.save(args.record, seen, args.goal_height, policy, args.grip_cap)
     print(f"[record] {seen} steps -> {args.record}")
   return 0
 
@@ -844,6 +875,43 @@ def _report_overdrive(overdrive, done: int, policy: StudentPolicy, live: bool) -
       "  ^ the policy is asking for several times the cap as a matter of course."
       " Either the profile's rate limit is tighter than the checkpoint trained"
       " under, or the observation is wrong. Check the run's env.yaml first."
+    )
+
+
+def _report_grip(current, seen: int, cap_a: float, live: bool) -> None:
+  """What the four finger motors were doing with the torque they were allowed.
+
+  The cap IS the grip force -- mode 5 is a position goal plus a current limit --
+  so this is the only readout of how hard the hand actually squeezed, and it is
+  what separates the two failures that look identical in the joint trace. A
+  finger stopped short of its goal AT the cap was held by the object, which is
+  a grasp working as designed and, if the object still did not come up, points
+  at `--grip-cap`. A finger stopped short while drawing well UNDER the cap was
+  not pushing at all, which points at the linkage rather than at the setting.
+
+  Reported per motor and not aggregated, because the interesting case is the
+  ASYMMETRIC one: one pad leaning on the object while the other never arrives
+  is how an object gets pushed out of the jaw instead of picked up.
+  """
+  if not live or seen == 0:
+    return
+  c = np.abs(current[:seen])
+  print(f"\n[grip] finger current against the {cap_a:.2f} A cap, amperes")
+  print(
+    f"  {'motor':<9}{'p50':>7}{'p95':>7}{'max':>7}{'% of steps at >=90% of cap':>28}"
+  )
+  for j, name in enumerate(calib.JOINT_NAMES[calib.HAND_SLICE]):
+    at_cap = 100.0 * float((c[:, j] >= 0.90 * cap_a).mean())
+    print(
+      f"  {name:<9}{np.percentile(c[:, j], 50):>7.3f}"
+      f"{np.percentile(c[:, j], 95):>7.3f}{c[:, j].max():>7.3f}{at_cap:>27.0f}%"
+    )
+  if c.max() < 0.5 * cap_a:
+    print(
+      "  ^ nothing ever came within half the cap, so no finger was working "
+      "against anything. A failed grasp here is a MISS -- the pads closed on "
+      "empty space -- not a weak squeeze, and raising --grip-cap will not "
+      "change it."
     )
 
 
