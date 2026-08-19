@@ -6,6 +6,16 @@ CameraSensorCfg comment in env_cfgs.py): the modelled intrinsics are the D435's
 exactly 640x480, giving a 73.53 x 58.53 deg field. So stream 848x480, centre-crop
 to 640x480, resize to 160x120, and the student sees its training field of view.
 
+THE LAST STEP IS THE ONE THAT COULD VARY, and so far never has: every checkpoint
+through round 3 reads 160x120. Round 3 does look at the crop more closely, but
+it does so with a stride-1 first convolution rather than a bigger frame, which is
+a property of the network and not of this file. The target size is still a policy
+property (`profiles.Profile.depth_hw`, asserted against the exported graph)
+threaded in here rather than a constant, because the day it does move this is the
+step that has to move with it. The FIELD OF VIEW -- what a mistake here would
+silently change -- comes from the stream and the crop above and is the same for
+every checkpoint.
+
 Streaming a 16:9 profile instead would squash 89.42 deg into pixels the student
 learned as 73.53 -- which does not raise, it just makes everything look nearer
 the optical axis than it is.
@@ -27,7 +37,7 @@ from . import calib
 
 
 def to_observation(depth_m: np.ndarray) -> np.ndarray:
-  """(H,W) metric depth in metres -> (1,120,160) float32 in [0,1].
+  """(H,W) metric depth in metres -> (1,H,W) float32 in [0,1].
 
   Zeros in the input are treated as INVALID (the RealSense convention) and stay
   zero, rather than being clamped up to DEPTH_MIN_M and read as "something 1 cm
@@ -40,8 +50,15 @@ def to_observation(depth_m: np.ndarray) -> np.ndarray:
   return d.reshape(1, *d.shape)
 
 
-def centre_crop_resize(depth_m: np.ndarray) -> np.ndarray:
-  """(480,848) -> (120,160), via the 640x480 centre crop the sim field assumes."""
+def centre_crop_resize(
+  depth_m: np.ndarray, out_hw: tuple[int, int] = calib.DEPTH_HW
+) -> np.ndarray:
+  """(480,848) -> `out_hw`, via the 640x480 centre crop the sim field assumes.
+
+  `out_hw` is the checkpoint's `profiles.Profile.depth_hw`, which is (120,160)
+  for every checkpoint to date. The crop is the same whatever it is; only the
+  block size changes.
+  """
   h, w = depth_m.shape
   cw, ch = calib.D435_CROP_WH
   if (w, h) != calib.D435_STREAM_WH:
@@ -54,12 +71,12 @@ def centre_crop_resize(depth_m: np.ndarray) -> np.ndarray:
   crop = depth_m[y0 : y0 + ch, x0 : x0 + cw]
 
   # Area-average downsample by the exact integer factor (640/160 = 480/120 = 4),
-  # which is what the renderer's box filter does. Nearest-neighbour instead
-  # would alias the cube's edges, and the cube is 16-25 px.
-  th, tw = calib.DEPTH_HW
+  # which is what the renderer's box filter does. Nearest-neighbour instead would
+  # alias the object's edges, and at 120x160 the cube is only 16-25 px.
+  th, tw = out_hw
   fy, fx = ch // th, cw // tw
   if fy * th != ch or fx * tw != cw:
-    raise ValueError(f"crop {(cw, ch)} is not an integer multiple of {calib.DEPTH_HW}")
+    raise ValueError(f"crop {(cw, ch)} is not an integer multiple of {out_hw}")
   blocks = crop.reshape(th, fy, tw, fx)
   # Average only over VALID pixels in each block; a block that is entirely
   # invalid stays 0 and to_observation() will keep it there.
@@ -99,10 +116,13 @@ class RealSenseDepth:
     threaded: bool = True,
     first_frame_s: float = 5.0,
     preset: str | None = None,
+    out_hw: tuple[int, int] = calib.DEPTH_HW,
   ):
+    """`out_hw` is the policy's `Profile.depth_hw`; see the module docstring."""
     import pyrealsense2 as rs  # local: the cluster has no camera and no driver
 
     self._rs = rs
+    self.out_hw = out_hw
     w, h = calib.D435_STREAM_WH
     self.fps = fps
     self.pipeline = rs.pipeline()
@@ -164,13 +184,13 @@ class RealSenseDepth:
     print(f"[cam] visual preset -> {name} (value {got})")
 
   def _grab(self) -> np.ndarray:
-    """One blocking sensor read -> the (1,120,160) observation."""
+    """One blocking sensor read -> the (1, *out_hw) observation."""
     frames = self.pipeline.wait_for_frames()
     frame = frames.get_depth_frame()
     if not frame:
       raise RuntimeError("no depth frame")
     raw = np.asanyarray(frame.get_data()).astype(np.float32) * self.depth_scale
-    return to_observation(centre_crop_resize(raw))
+    return to_observation(centre_crop_resize(raw, self.out_hw))
 
   def _pump(self) -> None:
     while not self._stop.is_set():
@@ -204,7 +224,7 @@ class RealSenseDepth:
     )
 
   def read(self) -> np.ndarray:
-    """-> (1,120,160) float32 observation. Non-blocking once threaded."""
+    """-> (1, *out_hw) float32 observation. Non-blocking once threaded."""
     if self._thread is None:
       return self._grab()
     with self._lock:

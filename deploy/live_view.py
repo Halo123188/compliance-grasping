@@ -1,6 +1,6 @@
 """Live D435 next to the sim's render of the same scene, on localhost.
 
-The policy sees one 120x160 depth frame and nothing else. Everything about
+The policy sees one depth frame and nothing else, 120x160. Everything about
 whether the real bench looks like the trained bench -- background distance,
 where the claw and the mast sit in frame, how much of the foam returns nothing
 -- is in that image, and no summary statistic substitutes for putting the two
@@ -190,6 +190,10 @@ class _Handler(BaseHTTPRequestHandler):
   # matters: importing it pulls in the pyrealsense2 probe.
   camera: Any = None
   sim: np.ndarray = np.zeros(calib.DEPTH_HW)
+  # The frame both halves are read at, taken from the reference render so the
+  # two panels are never two different pictures. 120x160 for every checkpoint
+  # to date; `render_sim_depth.py --depth-hw` is what would change it.
+  depth_hw: tuple[int, int] = calib.DEPTH_HW
   lock = threading.Lock()
 
   def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -205,7 +209,7 @@ class _Handler(BaseHTTPRequestHandler):
 
   def _real(self) -> np.ndarray:
     with self.lock:
-      return self.camera.read().reshape(calib.DEPTH_HW) * calib.DEPTH_CUTOFF_M
+      return self.camera.read().reshape(self.depth_hw) * calib.DEPTH_CUTOFF_M
 
   def do_GET(self) -> None:  # noqa: N802 -- BaseHTTPRequestHandler's name
     path = self.path.split("?")[0]
@@ -308,9 +312,19 @@ def main() -> int:
 
   ref = np.load(args.sim)
   sim = ref["depth_m"]
-  if sim.shape != calib.DEPTH_HW:
-    print(f"!! {args.sim} is {sim.shape}, expected {calib.DEPTH_HW}")
+  # The REFERENCE decides the resolution and the camera is opened to match, so
+  # that a reference rendered at some other size cannot end up beside a 120x160
+  # live frame. Any frame the 640x480 crop divides exactly is one this can
+  # serve.
+  cw, ch = calib.D435_CROP_WH
+  if sim.ndim != 2 or ch % sim.shape[0] or cw % sim.shape[1]:
+    print(
+      f"!! {args.sim} is {sim.shape}; expected a 2-D frame the {(cw, ch)} crop "
+      "divides exactly, e.g. (120, 160)."
+    )
     return 1
+  depth_hw = (int(sim.shape[0]), int(sim.shape[1]))
+  print(f"[ref] frame {depth_hw[0]}x{depth_hw[1]}")
   # What the reference assumes about the bench. Printed rather than checked,
   # because nothing here can see the bench -- but an operator reading "foam
   # 0.000 m" next to a bench that still has foam on it will catch in a second
@@ -344,9 +358,12 @@ def main() -> int:
 
   camera = None
   try:
-    camera = RealSenseDepth(fps=args.camera_fps, preset=args.camera_preset)
+    camera = RealSenseDepth(
+      fps=args.camera_fps, preset=args.camera_preset, out_hw=depth_hw
+    )
     _Handler.camera = camera
     _Handler.sim = sim
+    _Handler.depth_hw = depth_hw
     print(f"http://{args.host}:{args.port}   (ctrl-c to stop)")
     print(
       "put the arm at the policy home pose and the cube where you rendered it, "

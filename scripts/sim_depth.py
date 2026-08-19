@@ -47,13 +47,19 @@ from deploy import calib
 RENDER_WH = calib.D435_STREAM_WH  # (848, 480)
 
 
-def to_observation(depth_m: np.ndarray) -> np.ndarray:
-  """(480,848) rendered depth -> the (120,160) the student sees, in metres.
+def to_observation(
+  depth_m: np.ndarray, out_hw: tuple[int, int] = calib.DEPTH_HW
+) -> np.ndarray:
+  """(480,848) rendered depth -> the `out_hw` the student sees, in metres.
 
   Deliberately the same three steps as `deploy.perception.centre_crop_resize`,
   in the same order: crop to the trained field, then box-filter by the exact
   integer factor. Anything past the cutoff becomes 0, matching the sensor's
   "no return" rather than a very distant reading.
+
+  `out_hw` is the checkpoint's `profiles.Profile.depth_hw`, (120,160) for every
+  checkpoint to date. The crop, and therefore the field of view, does not move
+  whatever it is set to.
   """
   h, w = depth_m.shape
   if (w, h) != RENDER_WH:
@@ -65,14 +71,21 @@ def to_observation(depth_m: np.ndarray) -> np.ndarray:
   cw, ch = calib.D435_CROP_WH
   x0, y0 = (w - cw) // 2, (h - ch) // 2
   crop = depth_m[y0 : y0 + ch, x0 : x0 + cw]
-  th, tw = calib.DEPTH_HW
+  th, tw = out_hw
   fy, fx = ch // th, cw // tw
+  if fy * th != ch or fx * tw != cw:
+    raise ValueError(f"crop {(cw, ch)} is not an integer multiple of {out_hw}")
   small = crop.reshape(th, fy, tw, fx).mean(axis=(1, 3))
   small = np.where(small >= calib.DEPTH_CUTOFF_M, 0.0, small)
   return small
 
 
-def render_observation(renderer, data, camera: str = "scene_cam") -> np.ndarray:
+def render_observation(
+  renderer,
+  data,
+  camera: str = "scene_cam",
+  out_hw: tuple[int, int] = calib.DEPTH_HW,
+) -> np.ndarray:
   """One depth observation from an already-configured depth renderer."""
   renderer.update_scene(data, camera=camera)
-  return to_observation(np.asarray(renderer.render(), dtype=np.float64))
+  return to_observation(np.asarray(renderer.render(), dtype=np.float64), out_hw)

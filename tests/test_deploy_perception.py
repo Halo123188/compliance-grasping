@@ -179,3 +179,53 @@ def test_blocking_mode_still_works(fake_rs):
     assert cam.repeats == 0
   finally:
     cam.close()
+
+
+# --- the frame size is the checkpoint's ---------------------------------------
+
+
+def test_the_crop_is_the_same_at_either_resolution():
+  """The output size is a sampling choice; the FIELD is not up for grabs.
+
+  The trained field of view comes from the 848x480 stream and the 640x480
+  centre crop, both of which are fixed, and only the block size moves with
+  `out_hw`. So a finer output has to average down to the coarser one exactly --
+  if it does not, the crop moved, which is the mistake this guards.
+  """
+  from deploy.perception import centre_crop_resize
+
+  w, h = calib.D435_STREAM_WH
+  rng = np.random.default_rng(0)
+  depth = rng.uniform(0.3, 1.0, size=(h, w)).astype(np.float32)
+
+  small = centre_crop_resize(depth, (120, 160))
+  large = centre_crop_resize(depth, (240, 320))
+  assert (small.shape, large.shape) == ((120, 160), (240, 320))
+  np.testing.assert_allclose(
+    small, large.reshape(120, 2, 160, 2).mean(axis=(1, 3)), rtol=1e-5
+  )
+
+
+def test_a_target_the_crop_does_not_divide_by_is_refused():
+  """Resampling by a non-integer factor is a different filter, so it raises."""
+  from deploy.perception import centre_crop_resize
+
+  w, h = calib.D435_STREAM_WH
+  with pytest.raises(ValueError, match="integer multiple"):
+    centre_crop_resize(np.ones((h, w), np.float32), (100, 130))
+
+
+def test_the_reader_delivers_the_size_the_policy_asked_for(fake_rs):
+  """The camera takes its output size from the checkpoint, not from calib.py.
+
+  Every checkpoint to date asks for calib.DEPTH_HW; a size that is not the
+  default is used here precisely so the plumbing is exercised rather than the
+  constant.
+  """
+  from deploy.perception import RealSenseDepth
+
+  cam = RealSenseDepth(fps=90, out_hw=(240, 320))
+  try:
+    assert cam.read().shape == (1, 240, 320)
+  finally:
+    cam.close()
