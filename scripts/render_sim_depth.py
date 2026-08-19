@@ -49,7 +49,7 @@ from mjlab.tasks.manipulation.config.flexiv_two_finger_wide.scene import (
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sim_depth import RENDER_WH, render_observation  # noqa: E402
 
-OUT_HW = (120, 160)
+OUT_HW = (120, 160)  # the default; --depth-hw for the hi-res checkpoints
 
 
 def build(
@@ -115,7 +115,18 @@ def main() -> int:
       "comparison is only meaningful with both sides in the same pose."
     ),
   )
+  ap.add_argument(
+    "--depth-hw",
+    default=",".join(str(v) for v in OUT_HW),
+    metavar="H,W",
+    help=(
+      "the frame the checkpoint reads, as H,W; see profiles.Profile.depth_hw. "
+      "Every checkpoint to date reads the default. The rendered FIELD is the "
+      "same whatever this is -- only the sampling changes."
+    ),
+  )
   args = ap.parse_args()
+  h_out, w_out = (int(v) for v in args.depth_hw.split(","))
 
   joints = None
   if args.joints:
@@ -132,7 +143,7 @@ def main() -> int:
   w, h = RENDER_WH
   renderer = mujoco.Renderer(m, height=h, width=w)
   renderer.enable_depth_rendering()
-  depth = render_observation(renderer, d)
+  depth = render_observation(renderer, d, out_hw=(h_out, w_out))
   renderer.close()
   np.savez_compressed(
     args.out,
@@ -146,7 +157,7 @@ def main() -> int:
     foam_h=np.float32(CG_FOAM_H),
   )
   valid = depth > 0
-  print(f"rendered {OUT_HW}, {100 * valid.mean():.1f}% valid -> {args.out}")
+  print(f"rendered {(h_out, w_out)}, {100 * valid.mean():.1f}% valid -> {args.out}")
   if valid.any():
     v = depth[valid]
     print(

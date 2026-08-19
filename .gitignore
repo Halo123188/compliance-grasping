@@ -33,3 +33,16 @@ assets/**/preview/
 slurm-*.out
 /joint7_vel*
 /_joint7_vel.py
+
+# Deployment recordings: `deploy/run.py --record` writes these at the repo
+# root, 2-18 MB each. They are bench data, not source.
+/*.npz
+
+# CMake build tree for the real-time torque bridge. Regenerate with
+# `cmake -B build && cmake --build build` from the rt_bridge directory; the
+# cache bakes in absolute paths from whichever host configured it.
+src/mjlab/tasks/compliance/deploy/rt_bridge/build/
+
+# Observation mean/std dumped off a checkpoint's baked normalizer while
+# debugging a deployment. Bench scratch, not an input -- nothing loads it.
+deploy/*.npz

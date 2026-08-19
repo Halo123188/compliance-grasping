@@ -92,6 +92,75 @@ Added
   and their matching ``-Distill-Depth-`` students, all on SlewCurr's cap and
   schedule. The ones that observe the command run at 54 observation dimensions
   rather than 43 and so cannot warm-start from an existing checkpoint.
+- ``mjlab.tasks.compliance.deploy``: per-joint system identification on the real
+  Rizon 4S, and the real-time torque bridge it runs over. The arm XML declares
+  3.17/1.38/0.13 armature in its tier default classes but applies none of it to
+  the ``<joint>`` elements, so the compiled model has ``dof_armature`` all zero
+  and the shoulder came out 6x too light; ``frictionloss`` and ``damping`` are
+  zero too. ``identify_rizon.py`` measures all three plus the gravity-comp bias,
+  one joint at a time, from breakaway ramps (Coulomb friction, and the one
+  measurement that does not depend on the regression converging), sines (inertia,
+  because a sinusoid bounds the position excursion where a torque staircase does
+  not) and velocity sweeps (damping, which sines alone cannot separate from
+  Coulomb friction). The RDK's Python bindings exclude every real-time mode and
+  the Scheduler, so ``rt_bridge/`` is a C++ process holding the 1 kHz loop with
+  shared memory to the Python side -- ten ticks per policy step, which is the
+  sim's ``decimation=10`` rather than an approximation of it.
+- ``scripts/export_student_onnx.py``: turns a bare distillation ``model_N.pt``
+  into a deployable ONNX. The training-time exporter needs the run's
+  ``params/agent.yaml``; this one is for the checkpoints that arrive without a
+  ``params/`` directory at all, and rebuilds the student from its own weights --
+  layer widths, conv channels and kernels, observation width, and the CNN's
+  feature grid, which is a buffer inside the checkpoint. What the weights do not
+  settle is the CNN's STRIDE: same padding makes each layer ``ceil(dim/stride)``,
+  so a 30x40 grid is a 120x160 frame at stride 1/2/2 or a 240x320 one at 2/2/2,
+  and both load with ``strict=True``. So ``profiles.Profile`` declares both
+  ``depth_hw`` and ``cnn_stride``, and the exporter checks the pair against the
+  grid -- a check rather than a restatement, because neither half is derived
+  from the other. ``--check`` runs the export against the torch model.
+- ``deploy/`` runs the four round-3 students (``square_fixH``,
+  ``square_variableH``, ``cube``, ``everyShape``). They pair round 2's action
+  term -- fingers at 0.45, travel to -0.32 -- with a v11 34-d observation and no
+  ``cube_size`` term, so the finger settings can no longer be read off the
+  observation width; ``cube`` and ``everyShape`` also run their first
+  convolution at stride 1, which doubles the spatial-softmax grid off an
+  unchanged 120x160 camera. ``profiles.Profile`` gained ``depth_hw`` (asserted
+  against the exported graph's ``camera`` input, so a mispaired profile raises
+  at load) and ``cnn_stride``; ``scripts/render_sim_depth.py`` takes
+  ``--depth-hw``, and ``deploy/live_view.py`` reads the resolution off the
+  reference render and opens the camera to match, so the live and rendered
+  panels are never two different pictures.
+- ``deploy/profiles.py``: what changes between checkpoints -- the observation
+  layout, the finger action scale, the finger travel limits and the command
+  slew limit -- keyed by the run that produced the weights, and selected from
+  the ONNX filename and the graph rather than edited by hand before each run.
+  Every one of the four fails silently when wrong, and two of them are now
+  corroborated against the file itself (the observation width off the graph, the
+  action scale off the metadata) with a mismatch raising at load. ``run.py``
+  prints the whole profile before anything moves and takes ``--profile`` for a
+  renamed export, where the shape alone cannot say whether the limiter is on.
+- ``deploy/`` runs the round-2 students, which read the object's size. Their
+  observation is 35 wide, with the cube's HALF EDGE in metres between the
+  actions and ``goal_height`` -- both one number, so the swap is a valid vector
+  and the layout is settled against the baked normalizer (dim 33 means 0.0250
+  and 0.0175, the midpoints of the two arms' trained ranges) rather than assumed.
+  ``run.py --cube-mm`` takes the cube's edge in mm, defaults to
+  ``calib.CUBE_EDGE_MM``, and is range-checked against the checkpoint's own
+  trained sizes, because this observation goes through the same normalizer that
+  turned an out-of-range ``goal_height`` into a ``|3641|`` action.
+- ``deploy/`` now runs history-stacked students. The observation width is read
+  off the ONNX at load, so a checkpoint whose ``student`` group sets
+  ``history_length`` deploys with no flag to set, and feeding it a single frame
+  raises instead of running. The stacking is TERM-MAJOR -- each term's own
+  history is contiguous and the terms follow one another -- which is what
+  mjlab's group-level ``history_length`` builds, since it is applied per term.
+  Four whole observations laid end to end is the same number of floats in the
+  wrong order and nothing downstream can detect it; on a moving sequence the
+  frame-major reading takes this checkpoint's ``max|a|`` from 0.42 to 301. The
+  history is backfilled from the first frame at reset rather than filled over
+  the first four steps, matching ``CircularBuffer``'s first post-reset push.
+  ``scripts/wide_onnx_parity.py`` checks the assembled vector against the env's
+  own group at either width.
 - Added ``reduce="max"`` to ``MetricsTermCfg`` for reporting episode-peak values
   (e.g. peak power, peak contact force) without needing stateful wrapper classes.
 - Added ``BuiltinDcMotorActuator``, a native MuJoCo ``<dcmotor>`` wrapper.
@@ -229,6 +298,20 @@ Added
   raw action, commanded target and depth frame to an npz and writes it on the
   way out, including after a ``--max-jump`` abort — the aborting step's
   observation is in the file, since that is the one worth looking at.
+- Added ``scripts/measure_depth_holes.py``, which measures the D435's missing
+  returns against a rendered scene well enough to model them: how much is
+  missing and where, which side of a silhouette the occlusion shadow falls on,
+  whether its width matches ``f*B*(1/z_fg - 1/z_bg)``, whether a 3x3 median
+  removes it, and how blotchy it is. Measured over a nine-pose sweep: at the
+  working pose 7.4% of the frame is missing (14.7% of the top third); the claw
+  blanks 5-23% of its own silhouette and the fraction swings 4x with viewing
+  angle, which is what a specular surface does; the shadow is on the image-LEFT
+  of an occluder with 10x the hole density of the right side and stays above
+  85% out to 8 px; the observed width implies a 50 +- 6 mm stereo baseline,
+  i.e. the D435's nominal one recovered from the image; a 3x3 median removes
+  only 9% of it; and 93% of missing pixels sit in blobs of 16 px or more. The
+  training env models none of this -- ``patch_prob`` drops 8x8 blocks at random
+  positions, resampled every frame -- which is why the numbers are here.
 - Added ``scripts/sim_depth.py``, and fixed a 1.325x horizontal magnification in
   every sim-vs-real depth comparison. ``mujoco_warp`` crops a calibrated camera
   to the render's aspect (``render_util.py`` shrinks whichever sensor dimension
@@ -344,6 +427,38 @@ Added
   tolerance, i.e. a confident report of a camera fault that is not there. The
   default is unchanged (foam on, the bench the policy was trained against);
   pass ``-0.015`` for the bare table.
+- Added the deployment half of the training env's
+  ``SmoothedJointPositionAction``. ``StudentPolicy`` now keeps the published
+  command as state and bounds how fast it may move — a hard slew cap
+  (``Profile.rate_limit``) and a first-order lag (``Profile.ema_tau``) — seeded
+  from the measured joints at ``reset()`` exactly as the sim seeds from the
+  post-reset pose. Both are per-checkpoint and live in ``deploy/profiles.py``,
+  not in ``calib.py``, because they are the policy's property rather than the
+  bench's. Nothing can check the pairing for you — the ONNX metadata does not
+  carry the action term — so ``run.py`` prints the limit at startup and reports,
+  at the end of a live run, how far past it the policy was asking, which is what
+  a mismatch looks like.
+- Added ``deploy/calibrate_finger_scale.py``, which measures the finger joints'
+  counts-per-radian on the bench instead of assuming it. ``calib.COUNTS_PER_RAD``
+  was 651.9 = 4096/2pi, i.e. the assumption that the joint turns 1:1 with the
+  motor shaft; measured against the jaw's outside width it is **1028 ± 9**, a
+  1.58:1 linkage. Under the old value a commanded finger angle reached only 63%
+  of itself while the encoder read back 58% high, both making the claw narrower
+  than the policy believed: at the home pose it held a 64.2 mm jaw where the
+  policy thought it had 71.8, and a 50 mm cube presents 70.7 mm across its
+  diagonal, so for 55% of the trained (full-circle) yaws the cube could not enter
+  the jaw at all. Hardware grasp rate went from 2/20 to 3/4 of the runs that ran
+  past the approach. ``COUNTS_AT_ZERO_RAD`` stays 0 and is now confirmed rather
+  than assumed: ``outer width - inner gap`` measures exactly twice one finger's
+  thickness, which only holds when the fingers are parallel.
+- Added ``deploy/run.py --max-action``, aborting on a raw network output beyond
+  ``calib.MAX_ABS_ACTION`` (default 15; trained actions run to about |5| and the
+  observed blow-up was |600|). Under a slew limit this is the only guard that
+  sees such a step in time: the limiter publishes at most 20 mrad of new arm
+  motion per control step, so a |600| action and a |3| action produce the same
+  first command and ``--max-jump``, which watches tracking error, only diverges
+  several steps later. ``StudentPolicy`` also clamps the published target to
+  ``calib.JOINT_LIMITS``, so a large action cannot command past a hard stop.
 
 Changed
 ^^^^^^^
@@ -368,11 +483,27 @@ Changed
   pointing at a file that is gone. The measurements themselves are in the
   comments and are untouched.
 - ``deploy/`` now applies the same command smoothing the policy trained under,
-  set by ``calib.RATE_LIMIT`` / ``calib.EMA_TAU``. These must match the
-  checkpoint: a policy trained behind a slew cap learns to lean on it, asking for
-  a target rate up to 17x (and on the tightest arm 50x) what the limiter
-  publishes, so running such a checkpoint without the limiter is a full-speed
-  command rather than a slightly faster one.
+  read off the selected ``profiles.Profile``. It must match the checkpoint: a
+  policy trained behind a slew cap learns to lean on it, asking for a target rate
+  up to 17x (and on the tightest arm 50x) what the limiter publishes, so running
+  such a checkpoint without the limiter is a full-speed command rather than a
+  slightly faster one.
+- A gripper fault now names itself and the motor it came from. ``deploy/hand.py``
+  raised ``gripper fault 2 (see PROTOCOL.md Fault enum)`` and threw away the OBS
+  that arrived with it, though every OBS carries per-motor ``online``, ``alert``,
+  current and temperature. The fault name, that table and the fact that the
+  fault LATCHES (the controller has to be power-cycled) are all in the message
+  now, because ``2`` (WATCHDOG, a bus or connector problem) and ``5``
+  (MOTOR_REBOOTED, a brownout) want opposite responses on the bench.
+- ``deploy.home_arm`` now moves the ARM first and ramps the fingers afterwards.
+  The finger ramp is open-loop, timed and uninterruptible -- no planner, no
+  collision check -- so it belongs where the hand is in free space rather than
+  wherever the previous run parked the arm; homing the jaw opens it to 86.9 mm
+  of pad separation, sweeping each pad outward through whatever is beside it.
+  The hand is left untouched when the arm fails to reach home, since that is
+  exactly the case where its pose is unknown. The trade is that the arm now
+  traverses with the fingers as the last run left them, so open the gripper
+  first if it ended holding the cube.
 - Bumped ``rsl-rl-lib`` from 5.2.0 to 5.4.0.
 - Curriculum-mode terrain difficulty is now deterministic across rows
   and reaches the configured ``difficulty_range`` endpoints
@@ -459,6 +590,18 @@ Fixed
   and the occlusion shadow all work off the table and the wall and never
   noticed. A new check counts the pixels segmentation reports for each blinding
   target, so an empty target can no longer be mistaken for a zero rate.
+- Fixed the deployed finger clamp, which used the URDF's ±1.6 rad on all four
+  finger joints instead of the travel the training env sets (proximal
+  −0.0754…+1.60 and distal −1.60…+0.10 for the left finger, mirrored on the
+  right). In sim that range is a physical stop the policy is trained inside; on
+  hardware nothing stops the command, so a full-close action could be published
+  well past the drive-through limit. The clamp is per-checkpoint, since round 2
+  opens the proximal bound to −0.32 rad to pinch a 15 mm object.
+- Fixed ``deploy/hand.py``'s gripper checkout path, which was one machine's
+  absolute ``/home/yiboc/gripper/firmware/host``. It is now derived from this
+  repo's own location, so any host with the two repos side by side works
+  unconfigured, and ``$GRIPPER_HOST_DIR`` still overrides. The old default
+  failed at ``home_arm``, i.e. after you had already walked to the robot.
 - Fixed the wide-claw ``scene_cam`` extrinsic, which put the camera 19.9 mm to
   the image-left of where it actually sits, so the gripper landed in a visibly
   different place in a sim render than in the live D435 frame. The CAD chain was
