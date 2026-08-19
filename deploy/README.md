@@ -440,6 +440,25 @@ and on `everyShape` the object need not be a box at all.
    cannot be auto-detected, so a forgotten flag would otherwise mean a silent
    hand-less run.
 
+8. **Then take the bring-up limits off, or the number you measure is not the
+   policy's.** The command above runs at `--arm-max-vel 0.25`, about a tenth of
+   the 2.3 rad/s p99 this checkpoint reaches in sim, which is a different closed
+   loop and not a slower version of the same one. Both flags below are needed
+   together — a fast arm trips the floor guard's constant-velocity lookahead on
+   the approach, which stopped 13 of 15 runs on 2026-08-11 with the lowest pad
+   still 16 mm above the floor. See "Speed, and what it costs" and "The floor
+   guard".
+   ```sh
+   .venv-deploy/bin/python -m deploy.run \
+     --onnx <policy>.onnx --robot-sn Rizon4s-063501 --gripper-port /dev/ttyACM0 \
+     --arm-max-vel 2.5 --arm-max-acc 6.0 --floor-lookahead 0.08
+   ```
+   Leave `--speed` at 1 and `--arm-max-offset` unset here: both throttle torque
+   authority as well as speed, and the default offset is the training
+   environment's own saturation. Read the `[timing]` and `[limiter]` blocks
+   printed at the end — a sustained rate well under 50 Hz, or an overdrive p95
+   above 2, means the run was not the policy either.
+
 ### Is the camera aimed where the policy thinks it is?
 
 The depth image is the one input nothing else cross-checks. The joint vector is
