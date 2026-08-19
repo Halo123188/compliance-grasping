@@ -62,6 +62,13 @@ def _import_link():
   return GripperLink
 
 
+# The protocol's global motor order, ids 12, 11, 21, 22, against the sim joints
+# they were calibrated onto. Finger 1 is LEFT (settled by matching the taught
+# open/closed poses against the model's angles), so this order is also
+# calib.JOINT_NAMES[7:11].
+_MOTOR_NAMES = ("left_1", "left_2", "right_1", "right_2")
+
+
 class Hand:
   """Finger joints in sim radians, over the binary policy protocol.
 
@@ -140,8 +147,54 @@ class Hand:
       goals=self.rad_to_counts(q_target).tolist(),
     )
     if obs.get("fault"):
-      raise RuntimeError(f"gripper fault {obs['fault']} (see PROTOCOL.md Fault enum)")
+      raise RuntimeError(self._fault_message(obs))
     return obs
+
+  # Fault enum, from the controller's Gripper.h. Named here rather than left as
+  # a number because the number arrives at the top of a traceback, on a bench,
+  # with an energised arm still holding position -- and "2" and "5" want
+  # opposite responses (a bus problem versus a power problem).
+  _FAULTS = {
+    1: "MISSING_MOTOR: begin() could not find all four motors",
+    2: "WATCHDOG: a motor stopped answering for 10 consecutive control cycles",
+    3: "HARDWARE_ERROR: a motor raised its Hardware Error Status register",
+    4: "OVERTEMP: a motor went past TEMP_FAULT_C",
+    5: "MOTOR_REBOOTED: a motor's torque dropped out -- almost always a brownout",
+    6: "ESTOP: stop() was called",
+  }
+
+  def _fault_message(self, obs: dict) -> str:
+    """The fault, plus which motor it was and what that motor was doing.
+
+    Every OBS carries per-motor `online`, `alert`, current and temperature, and
+    throwing it away was making a diagnosable fault look like an opaque one. A
+    watchdog on a motor drawing near the cap is a brownout or a connector; a
+    watchdog on an idle motor is the bus.
+
+    The fault LATCHES -- `checkSafety` returns early while `fault_` is set and
+    only `begin()` clears it -- so the controller has to be rebooted (unplug and
+    replug the Teensy, or the CLI's own reset) before anything will arm again.
+    """
+    code = int(obs["fault"])
+    what = self._FAULTS.get(code, "unknown -- see PROTOCOL.md Fault enum")
+    lines = [f"gripper fault {code} -- {what}"]
+    for name, m in zip(_MOTOR_NAMES, obs.get("motors", ()), strict=False):
+      flags = []
+      if not m.get("online", True):
+        flags.append("OFFLINE")
+      if m.get("alert"):
+        flags.append("ALERT")
+      lines.append(
+        f"  {name:7} {'+'.join(flags) or 'ok':12} {m.get('cur_ma', 0):5d} mA  "
+        f"{m.get('temp', 0):3d} C  pos {m.get('pos', 0):6d}"
+      )
+    lines.append(
+      "  the fault latches: power-cycle the Teensy before re-running. If a motor "
+      "is OFFLINE at a high current, suspect the 5 V rail (gripper "
+      "NEXT_STEPS.md calls the brownout the project blocker) or its connector, "
+      "not the policy."
+    )
+    return "\n".join(lines)
 
   def ramp_to(self, target: np.ndarray, secs: float = 1.5) -> np.ndarray:
     """Walk the fingers to `target` (sim radians) over `secs`, and report where

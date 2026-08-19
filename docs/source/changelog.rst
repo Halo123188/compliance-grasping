@@ -294,6 +294,13 @@ Added
 Changed
 ^^^^^^^
 
+- A gripper fault now names itself and the motor it came from. ``deploy/hand.py``
+  raised ``gripper fault 2 (see PROTOCOL.md Fault enum)`` and threw away the OBS
+  that arrived with it, though every OBS carries per-motor ``online``, ``alert``,
+  current and temperature. The fault name, that table and the fact that the
+  fault LATCHES (the controller has to be power-cycled) are all in the message
+  now, because ``2`` (WATCHDOG, a bus or connector problem) and ``5``
+  (MOTOR_REBOOTED, a brownout) want opposite responses on the bench.
 - ``deploy.home_arm`` now moves the ARM first and ramps the fingers afterwards.
   The finger ramp is open-loop, timed and uninterruptible -- no planner, no
   collision check -- so it belongs where the hand is in free space rather than
